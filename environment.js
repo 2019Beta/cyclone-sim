@@ -179,6 +179,9 @@ class EnvField{
             this.displayFormat = v=>''+round(v*1000)/1000;
         this.invisible = attribs.invisible;
         this.oceanic = attribs.oceanic;
+        this.contourInterval = attribs.contourInterval;
+        this.contourGridSize = attribs.contourGridSize || ENV_LAYER_TILE_SIZE;
+        this.contourLabelInterval = attribs.contourLabelInterval || this.contourInterval;
         this.modifiers = attribs.modifiers;
         if(this.isVectorField) this.vec = createVector();
         if(attribs.mapFunc instanceof Function) this.mapFunc = attribs.mapFunc;
@@ -265,6 +268,11 @@ class EnvField{
 
     render(){
         envLayer.noFill();
+        if(this.contourInterval){
+            this.renderContours();
+            if(simSettings.showMagGlass) this.renderMagGlass();
+            return;
+        }
         let tileSize = ceil(ENV_LAYER_TILE_SIZE*scaler);
         for(let i=0;i<WIDTH;i+=ENV_LAYER_TILE_SIZE){
             for(let j=0;j<HEIGHT;j+=ENV_LAYER_TILE_SIZE){
@@ -317,6 +325,142 @@ class EnvField{
             }
         }
         if(simSettings.showMagGlass) this.renderMagGlass();
+    }
+
+    renderContours(){
+        let gridSize = this.contourGridSize;
+        let xCoords = [];
+        let yCoords = [];
+        for(let x=0;x<WIDTH;x+=gridSize) xCoords.push(x);
+        for(let y=0;y<HEIGHT;y+=gridSize) yCoords.push(y);
+        xCoords.push(WIDTH);
+        yCoords.push(HEIGHT);
+
+        let values = [];
+        for(let j=0;j<yCoords.length;j++){
+            let row = values[j] = [];
+            for(let i=0;i<xCoords.length;i++) row[i] = this.get(xCoords[i],yCoords[j],viewTick);
+        }
+
+        let segments = new Map();
+        let edgePoint = (edge,x0,y0,x1,y1,a,b,c,d,level)=>{
+            let ratio;
+            switch(edge){
+                case 0:
+                    ratio = a===b ? 0.5 : constrain((level-a)/(b-a),0,1);
+                    return {x:lerp(x0,x1,ratio),y:y0};
+                case 1:
+                    ratio = b===c ? 0.5 : constrain((level-b)/(c-b),0,1);
+                    return {x:x1,y:lerp(y0,y1,ratio)};
+                case 2:
+                    ratio = d===c ? 0.5 : constrain((level-d)/(c-d),0,1);
+                    return {x:lerp(x0,x1,ratio),y:y1};
+                default:
+                    ratio = a===d ? 0.5 : constrain((level-a)/(d-a),0,1);
+                    return {x:x0,y:lerp(y0,y1,ratio)};
+            }
+        };
+        let addSegment = (level,edgeA,edgeB,x0,y0,x1,y1,a,b,c,d)=>{
+            if(!segments.has(level)) segments.set(level,[]);
+            segments.get(level).push([
+                edgePoint(edgeA,x0,y0,x1,y1,a,b,c,d,level),
+                edgePoint(edgeB,x0,y0,x1,y1,a,b,c,d,level)
+            ]);
+        };
+
+        for(let j=0;j<yCoords.length-1;j++){
+            for(let i=0;i<xCoords.length-1;i++){
+                let a = values[j][i];
+                let b = values[j][i+1];
+                let c = values[j+1][i+1];
+                let d = values[j+1][i];
+                if(!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c) || !Number.isFinite(d)) continue;
+                let minimum = min(a,b,c,d);
+                let maximum = max(a,b,c,d);
+                let firstLevel = ceil(minimum/this.contourInterval)*this.contourInterval;
+                for(let level=firstLevel;level<maximum;level+=this.contourInterval){
+                    let index = 0;
+                    if(a>=level) index |= 8;
+                    if(b>=level) index |= 4;
+                    if(c>=level) index |= 2;
+                    if(d>=level) index |= 1;
+                    let pairs;
+                    switch(index){
+                        case 1: pairs = [[3,2]]; break;
+                        case 2: pairs = [[2,1]]; break;
+                        case 3: pairs = [[3,1]]; break;
+                        case 4: pairs = [[0,1]]; break;
+                        case 5:
+                            pairs = (a+b+c+d)/4>=level ? [[0,3],[1,2]] : [[0,1],[2,3]];
+                            break;
+                        case 6: pairs = [[0,2]]; break;
+                        case 7: pairs = [[0,3]]; break;
+                        case 8: pairs = [[3,0]]; break;
+                        case 9: pairs = [[0,2]]; break;
+                        case 10:
+                            pairs = (a+b+c+d)/4>=level ? [[0,1],[2,3]] : [[0,3],[1,2]];
+                            break;
+                        case 11: pairs = [[0,1]]; break;
+                        case 12: pairs = [[3,1]]; break;
+                        case 13: pairs = [[1,2]]; break;
+                        case 14: pairs = [[2,3]]; break;
+                        default: pairs = [];
+                    }
+                    for(let pair of pairs){
+                        addSegment(
+                            level,pair[0],pair[1],
+                            xCoords[i],yCoords[j],xCoords[i+1],yCoords[j+1],
+                            a,b,c,d
+                        );
+                    }
+                }
+            }
+        }
+
+        envLayer.push();
+        envLayer.scale(scaler);
+        envLayer.noFill();
+        for(let [level,levelSegments] of segments){
+            let labelled = level%this.contourLabelInterval===0;
+            envLayer.stroke(0,0,100,0.9);
+            envLayer.strokeWeight(labelled ? 3.5 : 2.5);
+            for(let segment of levelSegments)
+                envLayer.line(segment[0].x,segment[0].y,segment[1].x,segment[1].y);
+        }
+        for(let [level,levelSegments] of segments){
+            let labelled = level%this.contourLabelInterval===0;
+            envLayer.stroke(0,0,15,0.9);
+            envLayer.strokeWeight(labelled ? 1.6 : 1);
+            for(let segment of levelSegments)
+                envLayer.line(segment[0].x,segment[0].y,segment[1].x,segment[1].y);
+        }
+
+        envLayer.textAlign(CENTER,CENTER);
+        envLayer.textSize(10);
+        envLayer.textStyle(BOLD);
+        for(let [level,levelSegments] of segments){
+            if(level%this.contourLabelInterval!==0 || level<880 || level>1040) continue;
+            let labelSegment;
+            for(let segment of levelSegments){
+                let mx = (segment[0].x+segment[1].x)/2;
+                let my = (segment[0].y+segment[1].y)/2;
+                if(mx>35 && mx<WIDTH-35 && my>12 && my<HEIGHT-12 && abs(segment[1].x-segment[0].x)>=abs(segment[1].y-segment[0].y)){
+                    labelSegment = segment;
+                    break;
+                }
+            }
+            if(labelSegment){
+                let x = (labelSegment[0].x+labelSegment[1].x)/2;
+                let y = (labelSegment[0].y+labelSegment[1].y)/2;
+                envLayer.stroke(0,0,100,0.95);
+                envLayer.strokeWeight(3);
+                envLayer.fill(0,0,12);
+                envLayer.text(level,x,y);
+                envLayer.noFill();
+            }
+        }
+        envLayer.textStyle(NORMAL);
+        envLayer.pop();
     }
 
     renderMagGlass(){
@@ -392,6 +536,8 @@ class Environment{  // Environmental fields that determine storm strength and st
         this.displaying = -1;
         this.layerIsOceanic = false;
         this.layerIsVector = false;
+        this.pressureCacheKey = undefined;
+        this.pressureSystems = [];
     }
 
     addField(name,...fieldArgs){
@@ -405,6 +551,89 @@ class Environment{  // Environmental fields that determine storm strength and st
 
     record(){
         for(let i in this.fields) this.fields[i].record();
+    }
+
+    backgroundPressure(x,y,z){
+        let latitudeFraction = constrain(y/HEIGHT,0,1);
+        let subpolarLow = -5*Math.exp(-sq((latitudeFraction-0.2)/0.19));
+        let subtropicalHigh = 6*Math.exp(-sq((latitudeFraction-0.58)/0.2));
+        let equatorialLow = -3*Math.exp(-sq((latitudeFraction-1)/0.18));
+        let wave = 1.7*Math.sin(x/WIDTH*TAU*2+z/YEAR_LENGTH*TAU)*Math.sin(latitudeFraction*PI);
+        return 1016+subpolarLow+subtropicalHigh+equatorialLow+wave;
+    }
+
+    getPressureSystems(z){
+        let basin = this.basin;
+        let cacheKey = z + ':' + (z===basin.tick ? basin.activeSystems.length : basin.getSeason(z));
+        if(this.pressureCacheKey===cacheKey) return this.pressureSystems;
+
+        let stormData = [];
+        if(z===basin.tick){
+            for(let system of basin.activeSystems) stormData.push(system);
+        }else{
+            let season = basin.fetchSeason(z,true,true);
+            if(season){
+                for(let storm of season.forSystems(true)){
+                    if(storm.aliveAt(z)){
+                        let data = storm.getStormDataByTick(z,true);
+                        if(data) stormData.push(data);
+                    }
+                }
+            }
+        }
+
+        let mapData = MAP_TYPES[basin.mapType];
+        if(mapData.form!=='earth') mapData = MAP_TYPES[6];
+        let longitudeSpan = mapData.east-mapData.west;
+        if(longitudeSpan<=0) longitudeSpan += 360;
+        let latitudeSpan = abs(mapData.north-mapData.south);
+        let longitudeScale = WIDTH/longitudeSpan;
+        let latitudeScale = HEIGHT/latitudeSpan;
+        let result = [];
+        for(let data of stormData){
+            if(!Number.isFinite(data.pressure) || !data.pos) continue;
+            let wind = Number.isFinite(data.windSpeed) ? data.windSpeed : 30;
+            let radius = Number.isFinite(data.radiusOfMaxWind) ?
+                data.radiusOfMaxWind : StormData.estimateRadiusOfMaxWind(data.pressure,wind,data.type);
+            let latitude = data.coord().latitude;
+            let latitudeCosine = max(0.25,Math.cos(latitude*Math.PI/180));
+            let y = basin.hemY(data.pos.y);
+            let background = this.backgroundPressure(data.pos.x,y,z);
+            let deficit = background-data.pressure;
+            let expectedDeficit = max(8,(wind-25)*0.78);
+            let pressureBreadth = constrain(Math.sqrt(max(1,abs(deficit))/expectedDeficit),0.72,data.type===EXTROP ? 1.75 : 1.45);
+            let typeFactor = data.type===EXTROP ? 5 : data.type===MONSOON ? 4.2 : data.type===SUBTROP ? 3.6 : 3;
+            let sigmaNm = max(90,radius*typeFactor*pressureBreadth+20*Math.sqrt(abs(deficit)));
+            result.push({
+                x: data.pos.x,
+                y,
+                pressure: data.pressure,
+                sigmaX: sigmaNm/(60*latitudeCosine)*longitudeScale,
+                sigmaY: sigmaNm/60*latitudeScale
+            });
+        }
+        this.pressureCacheKey = cacheKey;
+        this.pressureSystems = result;
+        return result;
+    }
+
+    getPressure(x,y,z){
+        let background = this.backgroundPressure(x,y,z);
+        let strongestAnomaly = 0;
+        for(let system of this.getPressureSystems(z)){
+            let distance = sq((x-system.x)/system.sigmaX)+sq((y-system.y)/system.sigmaY);
+            if(distance<18){
+                // Each cyclone supplies a complete pressure profile rather than
+                // an anomaly to add to every other cyclone. Taking the strongest
+                // local profile prevents nearby lows from creating a spurious,
+                // over-deepened center between their actual positions. Because
+                // the profile interpolates to the recorded central pressure, its
+                // gradient is also zero at the cyclone's position.
+                let anomaly = (system.pressure-background)*Math.exp(-distance/2);
+                if(abs(anomaly)>abs(strongestAnomaly)) strongestAnomaly = anomaly;
+            }
+        }
+        return constrain(background+strongestAnomaly,650,1060);
     }
 
     get(field,x,y,z,noHem){

@@ -1,5 +1,9 @@
 About: A p5.js tropical cyclone simulation game
 
+v0.4.29 (2026-08-24):
+    + Added a mean sea-level pressure map with 4 hPa isobars
+        > Press E to cycle to the isobar layer
+        > Isobars reflect the current or selected historical advisory
 v0.4.28 (2026-08-24):
     + Added high-intensity extratropical development and bomb cyclones
         > Extratropical strengthening now responds to the jet stream, baroclinicity, moisture, and land

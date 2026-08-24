@@ -1,5 +1,5 @@
 const TITLE = "Cyclone Simulator";
-const VERSION_NUMBER = "0.4.28";
+const VERSION_NUMBER = "0.4.29";
 
 const SAVE_FORMAT = 7;  // Format #7 in use starting in v0.4
 const EARLIEST_COMPATIBLE_FORMAT = 0;
@@ -277,6 +277,9 @@ const KEY_REPEATER = 5;
 const MAX_SNOW_LAYERS = 50;
 const SNOW_SEASON_OFFSET = 5/6;
 const ENV_LAYER_TILE_SIZE = 20;
+const ISOBAR_GRID_SIZE = 12;
+const ISOBAR_INTERVAL = 4;
+const ISOBAR_LABEL_INTERVAL = 8;
 const NC_OFFSET_RANDOM_FACTOR = 4096;
 const ACE_WIND_THRESHOLD = 34;
 const ACE_DIVISOR = 10000;
@@ -334,7 +337,7 @@ const ENVDATA_SAVE_MULT = 10000;
 const HELP_TEXT = "Keyboard Controls:\n" +
     "\t\tSPACE - Pause/resume simulation\n" +
     "\t\tA - Step simulation one hour while paused\n" +
-    "\t\tE - Cycle through map layers\n" +
+    "\t\tE - Cycle through map layers (including isobars)\n" +
     "\t\tT - Cycle through track display modes\n" +
     "\t\tW - Toggle intensity indicators below storm icons (kts / hPa)\n" +
     "\t\tM - Toggle magnifying glass for map layers\n" +

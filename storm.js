@@ -986,13 +986,14 @@ class StormRef{
 }
 
 class StormData{
-    constructor(basin,x,y,p,w,t,radiusOfMaxWind){
+    constructor(basin,x,y,p,w,t,radiusOfMaxWind,circulationSize){
         if(basin instanceof Basin) this.basin = basin;
         this.pos = undefined;
         this.pressure = undefined;
         this.windSpeed = undefined; // in knots
         this.type = undefined;
         this.radiusOfMaxWind = undefined; // nautical miles
+        this.circulationSize = undefined; // structural size level: 1 (small) to 5 (large)
         if(x instanceof LoadData){
             this.load(x,y);
         }else{
@@ -1002,7 +1003,28 @@ class StormData{
             this.type = t<STORM_TYPES ? t : EXTROP;
             this.radiusOfMaxWind = Number.isFinite(radiusOfMaxWind) ? radiusOfMaxWind :
                 StormData.estimateRadiusOfMaxWind(p,w,this.type);
+            this.circulationSize = StormData.constrainCirculationSize(
+                circulationSize===undefined ? StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type) : circulationSize
+            );
         }
+    }
+
+    static radiusBounds(type){
+        return type===MONSOON ? [45,110] : type===EXTROP ? [18,140] : [7,90];
+    }
+
+    static constrainCirculationSize(level){
+        return constrain(round(Number.isFinite(level) ? level : 3),1,5);
+    }
+
+    static radiusToCirculationSize(radius,type){
+        let bounds = StormData.radiusBounds(type);
+        return StormData.constrainCirculationSize(map(radius,bounds[0],bounds[1],1,5,true));
+    }
+
+    static circulationSizeToRadius(level,type){
+        let bounds = StormData.radiusBounds(type);
+        return map(StormData.constrainCirculationSize(level),1,5,bounds[0],bounds[1]);
     }
 
     static estimateRadiusOfMaxWind(p,w,t){
@@ -1017,11 +1039,8 @@ class StormData{
     }
 
     static constrainRadiusOfMaxWind(radius,type){
-        return constrain(
-            radius,
-            type===MONSOON ? 45 : type===EXTROP ? 18 : 7,
-            type===MONSOON ? 110 : type===EXTROP ? 140 : 90
-        );
+        let bounds = StormData.radiusBounds(type);
+        return constrain(radius,bounds[0],bounds[1]);
     }
 
     coord(){
@@ -1032,7 +1051,7 @@ class StormData{
         let obj = {};
         let {longitude, latitude} = this.coord();
         obj.pos = {longitude, latitude};
-        for(let p of ['pressure','windSpeed','type','radiusOfMaxWind']) obj[p] = this[p];
+        for(let p of ['pressure','windSpeed','type','radiusOfMaxWind','circulationSize']) obj[p] = this[p];
         return obj;
     }
 
@@ -1047,6 +1066,9 @@ class StormData{
                 for(let p of ['pressure','windSpeed','type']) this[p] = obj[p];
                 this.radiusOfMaxWind = Number.isFinite(obj.radiusOfMaxWind) ? obj.radiusOfMaxWind :
                     StormData.estimateRadiusOfMaxWind(this.pressure,this.windSpeed,this.type);
+                this.circulationSize = StormData.constrainCirculationSize(
+                    obj.circulationSize===undefined ? StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type) : obj.circulationSize
+                );
             }else{
                 let str = data.value;
                 let arr = decodeB36StringArray(str);
@@ -1054,6 +1076,7 @@ class StormData{
                 this.windSpeed = arr.pop();
                 this.pressure = arr.pop();
                 this.radiusOfMaxWind = StormData.estimateRadiusOfMaxWind(this.pressure,this.windSpeed,this.type);
+                this.circulationSize = StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type);
                 if(posInArr) this.pos = posInArr;
                 else{
                     let opts = {
@@ -1072,6 +1095,7 @@ class StormData{
         let windSpeed = [];
         let type = [];
         let radiusOfMaxWind = [];
+        let circulationSize = [];
         for(let d of arr){
             if(d instanceof StormData){
                 let coord = d.coord();
@@ -1081,6 +1105,7 @@ class StormData{
                 windSpeed.push(constrain(d.windSpeed,0,pow(2,16)-1));
                 type.push(d.type);
                 radiusOfMaxWind.push(d.radiusOfMaxWind);
+                circulationSize.push(StormData.constrainCirculationSize(d.circulationSize));
             }
         }
         let obj = {};
@@ -1089,6 +1114,7 @@ class StormData{
         obj.windSpeed = new Uint16Array(windSpeed);
         obj.type = new Uint8ClampedArray(type);
         obj.radiusOfMaxWind = new Float32Array(radiusOfMaxWind);
+        obj.circulationSize = new Uint8ClampedArray(circulationSize);
         return obj;
     }
 
@@ -1116,10 +1142,12 @@ class StormData{
                 let windSpeed = [...obj.windSpeed];
                 let type = [...obj.type];
                 let radiusOfMaxWind = obj.radiusOfMaxWind ? [...obj.radiusOfMaxWind] : undefined;
+                let circulationSize = obj.circulationSize ? [...obj.circulationSize] : undefined;
                 for(let i=0;i<x.length;i++){
                     arr[i] = new StormData(
                         basin,x[i],y[i],pressure[i],windSpeed[i],type[i],
-                        radiusOfMaxWind ? radiusOfMaxWind[i] : undefined
+                        radiusOfMaxWind ? radiusOfMaxWind[i] : undefined,
+                        circulationSize ? circulationSize[i] : undefined
                     );
                 }
                 return arr;
@@ -1264,11 +1292,19 @@ class ActiveSystem extends StormData{
             this.windSpeed = d.windSpeed===undefined ? 30 : d.windSpeed;
             this.type = d.type===undefined ? EXTROP : d.type;
             let estimatedRadius = StormData.estimateRadiusOfMaxWind(this.pressure,this.windSpeed,this.type);
-            if(d.radiusOfMaxWind===undefined){
-                this.radiusOfMaxWind = StormData.constrainRadiusOfMaxWind(estimatedRadius*random(0.78,1.22),this.type);
+            let hasExplicitRadius = d.radiusOfMaxWind!==undefined;
+            this.radiusOfMaxWind = hasExplicitRadius ?
+                StormData.constrainRadiusOfMaxWind(d.radiusOfMaxWind,this.type) : estimatedRadius;
+            this.circulationSize = StormData.constrainCirculationSize(
+                d.circulationSize===undefined ?
+                    hasExplicitRadius ? StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type) : floor(random(1,6)) :
+                    d.circulationSize
+            );
+            this.radiusOfMaxWind = StormData.circulationSizeToRadius(this.circulationSize,this.type);
+            if(!hasExplicitRadius){
                 let sizeRatio = constrain(this.radiusOfMaxWind/estimatedRadius,0.82,1.18);
                 this.pressure = 1010-(1010-this.pressure)*sizeRatio;
-            }else this.radiusOfMaxWind = StormData.constrainRadiusOfMaxWind(d.radiusOfMaxWind,this.type);
+            }
             let activeAttribs = ACTIVE_ATTRIBS[basin.actMode] || ACTIVE_ATTRIBS.defaults;
             for(let v of activeAttribs)
                 this[v] = d[v] || 0;
@@ -1426,7 +1462,7 @@ class ActiveSystem extends StormData{
         let p = floor(this.pressure);
         let w = round(this.windSpeed/WINDSPEED_ROUNDING)*WINDSPEED_ROUNDING;
         let ty = this.type;
-        let adv = new StormData(this.basin,x,y,p,w,ty,this.radiusOfMaxWind);
+        let adv = new StormData(this.basin,x,y,p,w,ty,this.radiusOfMaxWind,this.circulationSize);
         this.fetchStorm().updateStats(adv);
         this.fetchStorm().record.push(adv);
         this.doTrackForecast();

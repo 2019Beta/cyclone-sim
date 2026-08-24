@@ -1689,6 +1689,14 @@ UI.init = function(){
                 info_row('Peak wind speed', displayWindspeed(S.windPeak.windSpeed));
             else
                 info_row('Peak wind speed', 'N/A');
+            let circulationData = S.getStormDataByTick(viewTick,true);
+            if(circulationData instanceof StormData){
+                let circulationLevel = StormData.constrainCirculationSize(circulationData.circulationSize);
+                info_row(
+                    'Circulation size',
+                    'Level ' + circulationLevel + ' / 5\n' + round(circulationData.radiusOfMaxWind) + ' nmi RMW'
+                );
+            }
             info_row('ACE', S.ACE);
             info_row('Damage', damageDisplayNumber(S.damage));
             info_row('Deaths', S.deaths);
