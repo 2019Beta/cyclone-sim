@@ -336,6 +336,28 @@ class EnvField{
         xCoords.push(WIDTH);
         yCoords.push(HEIGHT);
 
+        // Sample every cyclone's exact position. This captures compact inner
+        // cores without changing the pressure field or forcing separate outer
+        // isobars when nearby systems genuinely share a circulation envelope.
+        if(this.name==='pressure'){
+            let systems = this.basin.env.getPressureSystems(viewTick);
+            let centerXs = systems.map(system=>system.x).filter(x=>x>0 && x<WIDTH);
+            let centerYs = systems.map(system=>this.basin.hemY(system.y)).filter(y=>y>0 && y<HEIGHT);
+            let clearance = gridSize*0.35;
+            xCoords = xCoords.filter(x=>
+                x===0 || x===WIDTH || !centerXs.some(centerX=>abs(x-centerX)<clearance)
+            );
+            yCoords = yCoords.filter(y=>
+                y===0 || y===HEIGHT || !centerYs.some(centerY=>abs(y-centerY)<clearance)
+            );
+            xCoords.push(...centerXs);
+            yCoords.push(...centerYs);
+            xCoords.sort((a,b)=>a-b);
+            yCoords.sort((a,b)=>a-b);
+            xCoords = xCoords.filter((x,index)=>index===0 || x-xCoords[index-1]>1e-6);
+            yCoords = yCoords.filter((y,index)=>index===0 || y-yCoords[index-1]>1e-6);
+        }
+
         let values = [];
         for(let j=0;j<yCoords.length;j++){
             let row = values[j] = [];
@@ -603,7 +625,19 @@ class Environment{  // Environmental fields that determine storm strength and st
             let expectedDeficit = max(8,(wind-25)*0.78);
             let pressureBreadth = constrain(Math.sqrt(max(1,abs(deficit))/expectedDeficit),0.72,data.type===EXTROP ? 1.75 : 1.45);
             let typeFactor = data.type===EXTROP ? 5 : data.type===MONSOON ? 4.2 : data.type===SUBTROP ? 3.6 : 3;
-            let sigmaNm = max(90,radius*typeFactor*pressureBreadth+20*Math.sqrt(abs(deficit)));
+            // Intensity should primarily deepen a cyclone's inner pressure
+            // field, not make its outer profile expand without limit. The old
+            // 20*sqrt(deficit) term let extreme-mode storms remain hundreds of
+            // hPa below the environment more than 1,000 nm away, erasing the
+            // closed core of another intense cyclone. Keep a modest, saturating
+            // intensity contribution and let RMW/type describe system breadth.
+            let intensityExpansion = 6*Math.sqrt(min(abs(deficit),160));
+            let maximumSigma = data.type===EXTROP ? 600 :
+                data.type===MONSOON ? 500 : data.type===SUBTROP ? 420 : 300;
+            let sigmaNm = constrain(
+                radius*typeFactor*pressureBreadth+intensityExpansion,
+                90,maximumSigma
+            );
             result.push({
                 x: data.pos.x,
                 y,

@@ -379,6 +379,8 @@ class Storm{
             let scaleIconData = scale.getIcon(advX);
             let ty = advX.type;
             let name = this.getNameByTick(viewTick);
+            let showPressureCenter = basin.env.displaying>=0 &&
+                basin.env.fieldList[basin.env.displaying]==='pressure';
             let timestamp = performance.now();
             this.rotation -= 0.001 * (timestamp - this.rotationUpdateTimestamp) * pow(1.0115, min(270,st));
             this.rotationUpdateTimestamp = timestamp;
@@ -414,8 +416,8 @@ class Storm{
                 stormIcons.ellipse(0,0,DIAMETER*(selectedOutline ? MONSOON_ICON.selectedDiameter : MONSOON_ICON.centerDiameter));
                 if(!selectedOutline){
                     stormIcons.fill(brightness(COLORS.storm[MONSOON])<75 ? 240 : 0);
-                    stormIcons.textSize(6.5);
-                    stormIcons.text(MONSOON_ICON.symbol,0,0);
+                    stormIcons.textSize(showPressureCenter ? 8 : 6.5);
+                    stormIcons.text(showPressureCenter ? "L" : MONSOON_ICON.symbol,0,0);
                 }
             };
             stormIcons.push();
@@ -445,13 +447,15 @@ class Storm{
                     stormIcons.fill(brightness(scaleIconData.color)<75 ? 240 : 0);
                     stormIcons.textSize(8);
                 }
-                stormIcons.text(tropOrSub(ty) ? scaleIconData.symbol : "L", 0, 0);
+                stormIcons.text(showPressureCenter ? "L" : (tropOrSub(ty) ? scaleIconData.symbol : "L"),0,0);
             }
             stormIcons.textStyle(NORMAL);
             stormIcons.fill(0);
-            if(simSettings.showStrength){
+            if(simSettings.showStrength || showPressureCenter){
                 stormIcons.textSize(10);
-                stormIcons.text(`${displayWindspeed(floor(st), 1)}\n${floor(pr)} hPa`, 0, DIAMETER + 5);
+                let intensityLabel = simSettings.showStrength ?
+                    `${displayWindspeed(floor(st), 1)}\n${floor(pr)} hPa` : `${floor(pr)} hPa`;
+                stormIcons.text(intensityLabel,0,DIAMETER + 5);
             }
             if(name){
                 stormIcons.textAlign(LEFT,CENTER);
