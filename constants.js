@@ -1,5 +1,5 @@
 const TITLE = "Cyclone Simulator";
-const VERSION_NUMBER = "0.4.25";
+const VERSION_NUMBER = "0.4.26";
 
 const SAVE_FORMAT = 7;  // Format #7 in use starting in v0.4
 const EARLIEST_COMPATIBLE_FORMAT = 0;
@@ -7,7 +7,8 @@ const ENVDATA_COMPATIBLE_FORMAT = 0;
 
 const WIDTH = 960; // 16:9 aspect ratio
 const HEIGHT = 540;
-const DIAMETER = 20;    // Storm icon diameter
+const DIAMETER = 10;    // Storm icon diameter
+const STORM_HIT_RADIUS = 20; // Keep the original click/touch target size
 const PERLIN_ZOOM = 100;    // Resolution for perlin noise
 const TICK_DURATION = 3600000;  // How long in sim time does a tick last in milliseconds (1 hour)
 const ADVISORY_TICKS = 6;    // Number of ticks per advisory
@@ -258,7 +259,9 @@ const EXTROP = 0;
 const SUBTROP = 1;
 const TROP = 2;
 const TROPWAVE = 3;
-const STORM_TYPES = 4;
+// Keep new storm types at the end so numeric IDs in existing saves remain valid.
+const MONSOON = 4;
+const STORM_TYPES = 5;
 const KEY_LEFT_BRACKET = 219;
 const KEY_RIGHT_BRACKET = 221;
 const KEY_F11 = 122;
@@ -335,6 +338,7 @@ const HELP_TEXT = "Keyboard Controls:\n" +
     "\t\tCLICK + [special key] - Spawn [corresponding storm system]\n" +
     "\t\t\t\tX - Extratropical cyclone\n" +
     "\t\t\t\tL - Tropical Low/Wave\n" +
+    "\t\t\t\tN - Monsoon Depression (MD)\n" +
     "\t\t\t\tD - Tropical Depression\n" +
     "\t\t\t\tS - Tropical Storm\n" +
     "\t\t\t\t[number key 1-9] - Category [1-9]* Tropical Cyclone\n" +
@@ -349,6 +353,7 @@ function defineColors(){    // Since p5 color() function doesn't work until setu
     COLORS.storm = {};
     COLORS.storm[EXTROP] = color(220,220,220);
     COLORS.storm[TROPWAVE] = color(130,130,240);
+    COLORS.storm[MONSOON] = color(45,190,205);
     COLORS.storm.extL = "red";
     COLORS.land = [];
     COLORS.land.push([0.85, color(190,190,190)]);

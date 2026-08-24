@@ -63,6 +63,7 @@ class Scale{
         if(arguments[0] instanceof StormData){
             if(arguments[0].type===EXTROP) return COLORS.storm[EXTROP];
             if(arguments[0].type===TROPWAVE) return COLORS.storm[TROPWAVE];
+            if(arguments[0].type===MONSOON) return COLORS.storm[MONSOON];
             c = this.get(arguments[0]);
             subtropical = arguments[0].type===SUBTROP;
         }else{
@@ -89,6 +90,7 @@ class Scale{
             c = this.get(arguments[0]);
             subtropical = arguments[0].type===SUBTROP;
             color = this.getColor(arguments[0]);
+            if(arguments[0].type===MONSOON) return {symbol:'MD',arms:0,color};
         }else{
             c = arguments[0];
             subtropical = arguments[1];
@@ -116,6 +118,7 @@ class Scale{
         if(arguments[0] instanceof StormData){
             c = this.get(arguments[0]);
             subtropical = arguments[0].type===SUBTROP;
+            if(arguments[0].type===MONSOON) return 'Monsoon Depression';
         }else{
             c = arguments[0];
             subtropical = arguments[1];

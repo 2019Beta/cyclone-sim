@@ -9,6 +9,7 @@ var paused,
     buffers,
     scaler,
     tracks,
+    windFields,
     stormIcons,
     forecastTracks,
     landBuffer,
@@ -63,8 +64,9 @@ function setup(){
     let {fullW, fullH} = fullDimensions();
     tracks = createBuffer();
     tracks.strokeWeight(2);
+    windFields = createBuffer();
     stormIcons = createBuffer();
-    stormIcons.strokeWeight(3);
+    stormIcons.strokeWeight(1.5);
     forecastTracks = createBuffer();
     // forecastTracks.strokeWeight(2);
     // forecastTracks.stroke(240,240,0);
@@ -128,6 +130,7 @@ function draw(){
                     pop();
                     return;
                 }
+                windFields.clear();
                 stormIcons.clear();
                 if(!paused){
                     const step = STEP / Math.pow(2, simSpeed);

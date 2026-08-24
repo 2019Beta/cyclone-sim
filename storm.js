@@ -178,6 +178,7 @@ class Storm{
         switch(ty){
             case TROP:
             case SUBTROP:
+            case MONSOON:
                 str += clsnNom;
                 if(name) str += ' ' + name;
                 break;
@@ -201,6 +202,127 @@ class Storm{
                 break;
         }
         return str;
+    }
+
+    getWindRadii(data,previousData){
+        if(!(data instanceof StormData) || !tropOrSub(data.type) || data.windSpeed<34) return [];
+
+        // Approximate quadrant radii in nautical miles. Translation makes the
+        // wind field broader on the right side of motion in the northern
+        // hemisphere (left side in the southern hemisphere), while the small
+        // smooth perturbation keeps all four quadrants from looking identical.
+        let strongSideX = 0;
+        let strongSideY = 0;
+        let motionAsymmetry = 0;
+        if(previousData instanceof StormData){
+            let dx = data.pos.x-previousData.pos.x;
+            let dy = data.pos.y-previousData.pos.y;
+            let magnitude = Math.hypot(dx,dy);
+            if(magnitude>0.01){
+                let hemisphereDirection = this.basin.SHem ? -1 : 1;
+                strongSideX = -dy/magnitude*hemisphereDirection;
+                strongSideY = dx/magnitude*hemisphereDirection;
+                motionAsymmetry = 0.08+0.12*constrain(magnitude/(ADVISORY_TICKS*2),0,1);
+            }
+        }
+
+        let maximumWind = data.windSpeed;
+        let pressureDeficit = max(1,1010-data.pressure);
+        let expectedDeficit = max(8,(maximumWind-25)*0.78);
+        let pressureBreadth = constrain(Math.sqrt(pressureDeficit/expectedDeficit),0.72,1.45);
+        let radiusOfMaxWind = Number.isFinite(data.radiusOfMaxWind) ?
+            data.radiusOfMaxWind : StormData.estimateRadiusOfMaxWind(data.pressure,maximumWind,data.type);
+        let effectiveInnerRadius = radiusOfMaxWind*pressureBreadth*(data.type===MONSOON ? 1.4 : 1);
+        let decayExponent = constrain(0.62/pressureBreadth,0.38,0.78);
+        let configs = [
+            {threshold:34, max:420},
+            {threshold:50, max:260},
+            {threshold:64, max:180}
+        ];
+        let quadrantDirections = [
+            {x: Math.SQRT1_2, y:-Math.SQRT1_2}, // NE
+            {x: Math.SQRT1_2, y: Math.SQRT1_2}, // SE
+            {x:-Math.SQRT1_2, y: Math.SQRT1_2}, // SW
+            {x:-Math.SQRT1_2, y:-Math.SQRT1_2}  // NW
+        ];
+
+        let result = [];
+        for(let level=0;level<configs.length;level++){
+            let config = configs[level];
+            if(maximumWind<config.threshold) continue;
+            let baseRadius = min(
+                effectiveInnerRadius*pow(maximumWind/config.threshold,1/decayExponent),
+                config.max
+            );
+            let quadrants = [];
+            for(let q=0;q<quadrantDirections.length;q++){
+                let direction = quadrantDirections[q];
+                let levelAsymmetry = 1.15-level*0.1;
+                let motionBias = (direction.x*strongSideX+direction.y*strongSideY)*motionAsymmetry*levelAsymmetry;
+                let smoothAmplitude = data.type===MONSOON ? 0.17-level*0.02 : 0.09-level*0.015;
+                let smoothBias = smoothAmplitude*Math.sin(data.pos.x*0.035+data.pos.y*0.021+q*1.71+level*0.83);
+                let factor = constrain(1+motionBias+smoothBias,data.type===MONSOON ? 0.58 : 0.72,data.type===MONSOON ? 1.42 : 1.28);
+                quadrants.push(min(config.max,round(baseRadius*factor/5)*5));
+            }
+            result.push({threshold:config.threshold,quadrants});
+        }
+        return result;
+    }
+
+    renderWindField(){
+        if(!this.aliveAt(viewTick)) return;
+        let data = this.getStormDataByTick(viewTick,true);
+        if(!(data instanceof StormData)) return;
+
+        let previousData;
+        if(viewTick===this.basin.tick && this.current){
+            let previousIndex = this.record.length-1;
+            if(viewTick%ADVISORY_TICKS===0) previousIndex--;
+            if(previousIndex>=0) previousData = this.record[previousIndex];
+        }else{
+            let index = floor(viewTick/ADVISORY_TICKS)-ceil(this.birthTime/ADVISORY_TICKS);
+            if(index>0) previousData = this.record[index-1];
+        }
+
+        let radii = this.getWindRadii(data,previousData);
+        if(radii.length<1) return;
+
+        let mapData = MAP_TYPES[this.basin.mapType];
+        if(mapData.form!=='earth') mapData = MAP_TYPES[6];
+        let longitudeSpan = mapData.east-mapData.west;
+        if(longitudeSpan<=0) longitudeSpan += 360;
+        let latitudeSpan = abs(mapData.north-mapData.south);
+        let latitude = data.coord().latitude;
+        let longitudeScale = WIDTH/longitudeSpan;
+        let latitudeScale = HEIGHT/latitudeSpan;
+        let latitudeCosine = max(0.25,Math.cos(latitude*Math.PI/180));
+        let styles = {
+            34: {fill:[255,215,0,46], stroke:[255,220,0,225]},
+            50: {fill:[255,153,0,58], stroke:[255,160,0,235]},
+            64: {fill:[255, 92,0,70], stroke:[255,108,0,245]}
+        };
+
+        windFields.push();
+        windFields.translate(data.pos.x,data.pos.y);
+        windFields.strokeWeight(1.5);
+        for(let level of radii){
+            let style = styles[level.threshold];
+            windFields.fill(...style.fill);
+            windFields.stroke(...style.stroke);
+            windFields.beginShape();
+            for(let q=0;q<4;q++){
+                let radius = level.quadrants[q];
+                let radiusX = radius/(60*latitudeCosine)*longitudeScale;
+                let radiusY = radius/60*latitudeScale;
+                let startAngle = -HALF_PI+q*HALF_PI;
+                for(let step=0;step<=12;step++){
+                    let angle = startAngle+step*HALF_PI/12;
+                    windFields.vertex(Math.cos(angle)*radiusX,Math.sin(angle)*radiusY);
+                }
+            }
+            windFields.endShape(CLOSE);
+        }
+        windFields.pop();
     }
 
     renderIcon(){
@@ -238,31 +360,56 @@ class Storm{
                     stormIcons.pop();
                 }
             };
+            let drawMonsoonIcon = selectedOutline=>{
+                let iconColor = selectedOutline ? 255 : scaleIconData.color;
+                stormIcons.push();
+                if(basin.SHem) stormIcons.scale(1,-1);
+                stormIcons.rotate(this.rotation*0.22);
+                stormIcons.noFill();
+                stormIcons.stroke(iconColor);
+                stormIcons.strokeWeight(selectedOutline ? 2.5 : 1.5);
+                stormIcons.arc(0,0,DIAMETER*2.25,DIAMETER*1.6,-PI*0.12,PI*0.72);
+                stormIcons.arc(0,0,DIAMETER*2.25,DIAMETER*1.6,PI*0.88,PI*1.72);
+                stormIcons.pop();
+                stormIcons.noStroke();
+                stormIcons.fill(selectedOutline ? 255 : scaleIconData.color);
+                stormIcons.ellipse(0,0,DIAMETER*(selectedOutline ? 1.35 : 1.15));
+                if(!selectedOutline){
+                    stormIcons.fill(brightness(scaleIconData.color)<75 ? 240 : 0);
+                    stormIcons.textSize(6.5);
+                    stormIcons.text('MD',0,0);
+                }
+            };
             stormIcons.push();
             stormIcons.translate(pos.x,pos.y);
             stormIcons.textAlign(CENTER,CENTER);
-            if(selectedStorm===this){
-                stormIcons.noFill();
-                stormIcons.stroke(255);
-                if(ty===EXTROP){
-                    stormIcons.textSize(18);
-                    stormIcons.text("L",0,0);
-                }else stormIcons.ellipse(0,0,DIAMETER);
-                drawArms();
-            }
-            stormIcons.fill(scaleIconData.color);
-            stormIcons.noStroke();
-            if(ty!==EXTROP) stormIcons.ellipse(0,0,DIAMETER);
-            drawArms();
-            if(ty===EXTROP){
-                stormIcons.fill(COLORS.storm.extL);
-                stormIcons.textSize(18);
+            if(ty===MONSOON){
+                if(selectedStorm===this) drawMonsoonIcon(true);
+                drawMonsoonIcon(false);
             }else{
-                stormIcons.fill(brightness(scaleIconData.color)<75 ? 240 : 0);
-                stormIcons.textSize(12);
+                if(selectedStorm===this){
+                    stormIcons.noFill();
+                    stormIcons.stroke(255);
+                    if(ty===EXTROP){
+                        stormIcons.textSize(10);
+                        stormIcons.text("L",0,0);
+                    }else stormIcons.ellipse(0,0,DIAMETER);
+                    drawArms();
+                }
+                stormIcons.fill(scaleIconData.color);
+                stormIcons.noStroke();
+                if(ty!==EXTROP) stormIcons.ellipse(0,0,DIAMETER);
+                drawArms();
+                if(ty===EXTROP){
+                    stormIcons.fill(COLORS.storm.extL);
+                    stormIcons.textSize(10);
+                }else{
+                    stormIcons.fill(brightness(scaleIconData.color)<75 ? 240 : 0);
+                    stormIcons.textSize(8);
+                }
+                stormIcons.text(tropOrSub(ty) ? scaleIconData.symbol : "L", 0, 0);
             }
             stormIcons.textStyle(NORMAL);
-            stormIcons.text(tropOrSub(ty) ? scaleIconData.symbol : "L", 0, 0);
             stormIcons.fill(0);
             if(simSettings.showStrength){
                 stormIcons.textSize(10);
@@ -801,12 +948,13 @@ class StormRef{
 }
 
 class StormData{
-    constructor(basin,x,y,p,w,t){
+    constructor(basin,x,y,p,w,t,radiusOfMaxWind){
         if(basin instanceof Basin) this.basin = basin;
         this.pos = undefined;
         this.pressure = undefined;
         this.windSpeed = undefined; // in knots
         this.type = undefined;
+        this.radiusOfMaxWind = undefined; // nautical miles
         if(x instanceof LoadData){
             this.load(x,y);
         }else{
@@ -814,7 +962,24 @@ class StormData{
             this.pressure = p;
             this.windSpeed = w;
             this.type = t<STORM_TYPES ? t : EXTROP;
+            this.radiusOfMaxWind = Number.isFinite(radiusOfMaxWind) ? radiusOfMaxWind :
+                StormData.estimateRadiusOfMaxWind(p,w,this.type);
         }
+    }
+
+    static estimateRadiusOfMaxWind(p,w,t){
+        let wind = Number.isFinite(w) ? w : 30;
+        let pressure = Number.isFinite(p) ? p : 1010;
+        let climatologicalRadius = map(constrain(wind,20,160),20,160,52,12);
+        let expectedDeficit = max(8,(wind-25)*0.78);
+        let pressureDeficit = max(1,1010-pressure);
+        let breadth = constrain(Math.sqrt(pressureDeficit/expectedDeficit),0.75,1.35);
+        let typeFactor = t===MONSOON ? 1.65 : t===SUBTROP ? 1.25 : t===EXTROP ? 1.4 : 1;
+        return StormData.constrainRadiusOfMaxWind(climatologicalRadius*breadth*typeFactor,t);
+    }
+
+    static constrainRadiusOfMaxWind(radius,type){
+        return constrain(radius,type===MONSOON ? 45 : 7,type===MONSOON ? 110 : 90);
     }
 
     coord(){
@@ -825,7 +990,7 @@ class StormData{
         let obj = {};
         let {longitude, latitude} = this.coord();
         obj.pos = {longitude, latitude};
-        for(let p of ['pressure','windSpeed','type']) obj[p] = this[p];
+        for(let p of ['pressure','windSpeed','type','radiusOfMaxWind']) obj[p] = this[p];
         return obj;
     }
 
@@ -838,12 +1003,15 @@ class StormData{
                 else
                     this.pos = createVector(obj.pos.x,obj.pos.y);
                 for(let p of ['pressure','windSpeed','type']) this[p] = obj[p];
+                this.radiusOfMaxWind = Number.isFinite(obj.radiusOfMaxWind) ? obj.radiusOfMaxWind :
+                    StormData.estimateRadiusOfMaxWind(this.pressure,this.windSpeed,this.type);
             }else{
                 let str = data.value;
                 let arr = decodeB36StringArray(str);
                 this.type = arr.pop();
                 this.windSpeed = arr.pop();
                 this.pressure = arr.pop();
+                this.radiusOfMaxWind = StormData.estimateRadiusOfMaxWind(this.pressure,this.windSpeed,this.type);
                 if(posInArr) this.pos = posInArr;
                 else{
                     let opts = {
@@ -861,6 +1029,7 @@ class StormData{
         let pressure = [];
         let windSpeed = [];
         let type = [];
+        let radiusOfMaxWind = [];
         for(let d of arr){
             if(d instanceof StormData){
                 let coord = d.coord();
@@ -869,6 +1038,7 @@ class StormData{
                 pressure.push(constrain(d.pressure,0,pow(2,16)-1));
                 windSpeed.push(constrain(d.windSpeed,0,pow(2,16)-1));
                 type.push(d.type);
+                radiusOfMaxWind.push(d.radiusOfMaxWind);
             }
         }
         let obj = {};
@@ -876,6 +1046,7 @@ class StormData{
         obj.pressure = new Uint16Array(pressure);
         obj.windSpeed = new Uint16Array(windSpeed);
         obj.type = new Uint8ClampedArray(type);
+        obj.radiusOfMaxWind = new Float32Array(radiusOfMaxWind);
         return obj;
     }
 
@@ -902,8 +1073,12 @@ class StormData{
                 let pressure = [...obj.pressure];
                 let windSpeed = [...obj.windSpeed];
                 let type = [...obj.type];
+                let radiusOfMaxWind = obj.radiusOfMaxWind ? [...obj.radiusOfMaxWind] : undefined;
                 for(let i=0;i<x.length;i++){
-                    arr[i] = new StormData(basin,x[i],y[i],pressure[i],windSpeed[i],type[i]);
+                    arr[i] = new StormData(
+                        basin,x[i],y[i],pressure[i],windSpeed[i],type[i],
+                        radiusOfMaxWind ? radiusOfMaxWind[i] : undefined
+                    );
                 }
                 return arr;
             }else{
@@ -1046,6 +1221,12 @@ class ActiveSystem extends StormData{
             this.pressure = d.pressure===undefined ? 1000 : d.pressure;
             this.windSpeed = d.windSpeed===undefined ? 30 : d.windSpeed;
             this.type = d.type===undefined ? EXTROP : d.type;
+            let estimatedRadius = StormData.estimateRadiusOfMaxWind(this.pressure,this.windSpeed,this.type);
+            if(d.radiusOfMaxWind===undefined){
+                this.radiusOfMaxWind = StormData.constrainRadiusOfMaxWind(estimatedRadius*random(0.78,1.22),this.type);
+                let sizeRatio = constrain(this.radiusOfMaxWind/estimatedRadius,0.82,1.18);
+                this.pressure = 1010-(1010-this.pressure)*sizeRatio;
+            }else this.radiusOfMaxWind = StormData.constrainRadiusOfMaxWind(d.radiusOfMaxWind,this.type);
             let activeAttribs = ACTIVE_ATTRIBS[basin.actMode] || ACTIVE_ATTRIBS.defaults;
             for(let v of activeAttribs)
                 this[v] = d[v] || 0;
@@ -1203,7 +1384,7 @@ class ActiveSystem extends StormData{
         let p = floor(this.pressure);
         let w = round(this.windSpeed/WINDSPEED_ROUNDING)*WINDSPEED_ROUNDING;
         let ty = this.type;
-        let adv = new StormData(this.basin,x,y,p,w,ty);
+        let adv = new StormData(this.basin,x,y,p,w,ty,this.radiusOfMaxWind);
         this.fetchStorm().updateStats(adv);
         this.fetchStorm().record.push(adv);
         this.doTrackForecast();
@@ -1374,5 +1555,5 @@ class ActiveSystem extends StormData{
 }
 
 function tropOrSub(ty){
-    return ty===TROP || ty===SUBTROP;
+    return ty===TROP || ty===SUBTROP || ty===MONSOON;
 }

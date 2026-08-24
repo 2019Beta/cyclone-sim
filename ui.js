@@ -315,6 +315,13 @@ UI.init = function(){
     primaryWrapper = new UI(null,0,0,WIDTH,HEIGHT,function(s){
         if(UI.viewBasin instanceof Basin){
             let basin = UI.viewBasin;
+            if(selectedStorm) selectedStorm.renderWindField();
+            else if(basin.viewingPresent()){
+                for(let S of basin.activeSystems) S.fetchStorm().renderWindField();
+            }else{
+                let seas = basin.fetchSeason(viewTick,true);
+                if(seas) for(let S of seas.forSystems(true)) S.renderWindField();
+            }
             if(basin.viewingPresent()) for(let S of basin.activeSystems) S.fetchStorm().renderIcon();
             else{
                 let seas = basin.fetchSeason(viewTick,true);
@@ -358,6 +365,7 @@ UI.init = function(){
             }
             // let sub = land.getSubBasin(getMouseX(),getMouseY());
             // if(basin.subBasins[sub] instanceof SubBasin && basin.subBasins[sub].mapOutline) drawBuffer(basin.subBasins[sub].mapOutline);   // test
+            drawBuffer(windFields);
             drawBuffer(tracks);
             drawBuffer(forecastTracks);
             drawBuffer(stormIcons);
@@ -369,8 +377,8 @@ UI.init = function(){
         if(UI.viewBasin instanceof Basin){
             let basin = UI.viewBasin;
             if(basin.godMode && keyIsPressed && basin.viewingPresent()) {
-                if(['l','x','d','D','s','S','1','2','3','4','5','6','7','8','9','0','y'].includes(key))
-                    basin.spawnArchetype(key,getMouseX(),getMouseY());
+                if(['l','x','n','N','d','D','s','S','1','2','3','4','5','6','7','8','9','0','y'].includes(key))
+                    basin.spawnArchetype(key.toLowerCase()==='n' ? 'n' : key,getMouseX(),getMouseY());
                 // let g = {x: getMouseX(), y: getMouseY()};
                 // if(key === "l" || key === "L"){
                 //     g.sType = "l";
@@ -413,7 +421,7 @@ UI.init = function(){
                 for(let i=basin.activeSystems.length-1;i>=0;i--){
                     let s = basin.activeSystems[i].fetchStorm();
                     let p = s.getStormDataByTick(viewTick,true).pos;
-                    if(p.dist(mVector)<DIAMETER){
+                    if(p.dist(mVector)<STORM_HIT_RADIUS){
                         selectStorm(s);
                         refreshTracks(true);
                         return;
@@ -429,7 +437,7 @@ UI.init = function(){
                         let s = vSeason.fetchSystemAtIndex(i);
                         if(s && s.aliveAt(viewTick)){
                             let p = s.getStormDataByTick(viewTick).pos;
-                            if(p.dist(mVector)<DIAMETER){
+                            if(p.dist(mVector)<STORM_HIT_RADIUS){
                                 selectStorm(s);
                                 refreshTracks(true);
                                 return;

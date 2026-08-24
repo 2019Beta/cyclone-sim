@@ -1,5 +1,13 @@
 About: A p5.js tropical cyclone simulation game
 
+v0.4.26 (2026-08-24):
+    + Added Monsoon Depression (MD) as a distinct system type
+        > Broad, asymmetric circulation with a large light-wind core
+        > Typical winds of 20-65 kt and slower organization, intensification, and movement
+        > Can transition into a conventional tropical cyclone after developing persistent central convection
+        > God Mode spawn hotkey: "N"
+    + Added a dedicated MD icon and wind-field structure
+    % Versioned local source URLs to prevent stale files from mixing after an update
 v0.4.25 (2026-05-14):
     * Updated name lists for North Atlantic, Western Pacific, PAGASA, Australian Region, South-West Indian Ocean, South Pacific, and Mediterranean
 v0.4.24 (2025-08-20):

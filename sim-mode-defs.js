@@ -101,6 +101,17 @@ SPAWN_RULES.defaults.archetypes = {
         lowerWarmCore: 0.6,
         upperWarmCore: 0.5
     },
+    'n': {
+        inherit: 'tw',
+        pressure: [994,1008],
+        windSpeed: [20,65],
+        type: MONSOON,
+        radiusOfMaxWind: [60,100],
+        organization: [0.18,0.42],
+        lowerWarmCore: [0.58,0.78],
+        upperWarmCore: [0.48,0.68],
+        depth: 0.35
+    },
     'd': {
         inherit: 'tc'
     },
@@ -178,6 +189,9 @@ SPAWN_RULES.defaults.doSpawn = function(b){
     // tropical waves
     if(random()<0.015*sq((seasonCurve(b.tick)+1)/2)) b.spawnArchetype('tw');
 
+    // broad, loosely organized monsoon depressions
+    if(random()<0.0008*sq((seasonCurve(b.tick)+1)/2)) b.spawnArchetype('n');
+
     // extratropical cyclones
     if(random()<0.01-0.002*seasonCurve(b.tick)) b.spawnArchetype('ex');
 };
@@ -190,6 +204,8 @@ SPAWN_RULES[SIM_MODE_NORMAL].doSpawn = SPAWN_RULES.defaults.doSpawn;
 
 SPAWN_RULES[SIM_MODE_HYPER].doSpawn = function(b){
     if(random()<(0.013*sq((seasonCurve(b.tick)+1)/2)+0.002)) b.spawnArchetype('tw');
+
+    if(random()<0.0012*sq((seasonCurve(b.tick)+1)/2)) b.spawnArchetype('n');
 
     if(random()<0.01-0.002*seasonCurve(b.tick)) b.spawnArchetype('ex');
 };
@@ -212,6 +228,7 @@ SPAWN_RULES[SIM_MODE_WILD].archetypes = {
 
 SPAWN_RULES[SIM_MODE_WILD].doSpawn = function(b){
     if(random()<0.015) b.spawnArchetype('tw');
+    if(random()<0.001) b.spawnArchetype('n');
     if(random()<0.01-0.002*seasonCurve(b.tick)) b.spawnArchetype('ex');
 };
 
@@ -878,6 +895,7 @@ STORM_ALGORITHM.defaults.interaction = function(sys0, sys1){
     v.sub(sys1.pos);
     let m = v.mag();
     let r = map(sys1.lowerWarmCore,0,1,150,50);
+    if(sys1.type===MONSOON) r *= 1.45;
     if(m<r && m>0){
         v.rotate(sys0.basin.hem(-TAU/4+((3/m)*TAU/16)));
         v.setMag(map(m,r,0,0,map(constrain(sys1.pressure,990,1030),1030,990,0.2,2.2)));
@@ -899,10 +917,48 @@ STORM_ALGORITHM.defaults.steering = function(sys,vec,u){
     let x = lerp(ll.x,ul.x,d);       // Deeper systems follow upper-level steering more and lower-level steering less
     let y = lerp(ll.y,ul.y,d);
     vec.set(x,y);
+    if(sys.type===MONSOON) vec.mult(0.65);
     vec.add(sys.interaction.fuji);
 };
 
 // -- Core -- //
+
+function updateWindFieldStructure(sys,shear,lnd){
+    if(!Number.isFinite(sys.radiusOfMaxWind))
+        sys.radiusOfMaxWind = StormData.estimateRadiusOfMaxWind(sys.pressure,sys.windSpeed,sys.type);
+
+    let polewardFraction = constrain((HEIGHT-sys.basin.hemY(sys.pos.y))/HEIGHT,0,1);
+    let targetRadius = map(constrain(sys.windSpeed,20,160),20,160,52,12);
+    targetRadius += 18*polewardFraction;
+    targetRadius += 0.45*constrain(shear,0,30);
+    targetRadius += 8*(1-constrain(sys.organization,0,1));
+    if(sys.type===MONSOON) targetRadius += 34;
+    else if(sys.type===SUBTROP) targetRadius += 14;
+    else if(!tropOrSub(sys.type)) targetRadius += 18;
+    if(lnd) targetRadius += 6;
+    targetRadius = StormData.constrainRadiusOfMaxWind(targetRadius,sys.type);
+
+    let adjustmentRate = sys.type===MONSOON ? 0.0015 : tropOrSub(sys.type) ? 0.004 : 0.01;
+    sys.radiusOfMaxWind = StormData.constrainRadiusOfMaxWind(
+        lerp(sys.radiusOfMaxWind,targetRadius,adjustmentRate)+random(-0.035,0.035),
+        sys.type
+    );
+}
+
+function windPressureSizeFactors(sys){
+    if(sys.type===MONSOON){
+        let radius = constrain(sys.radiusOfMaxWind,45,110);
+        return {
+            pressure: map(radius,45,110,1.08,1.35),
+            wind: map(radius,45,110,0.86,0.65)
+        };
+    }
+    let radius = constrain(sys.radiusOfMaxWind,8,70);
+    return {
+        pressure: map(radius,8,70,0.82,1.22),
+        wind: map(radius,8,70,1.18,0.82)
+    };
+}
 
 STORM_ALGORITHM.defaults.core = function(sys,u){
     let SST = u.f("SST");
@@ -911,6 +967,8 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
     let lnd = u.land();
     let moisture = u.f("moisture");
     let shear = u.f("shear").mag()+sys.interaction.shear;
+    let isMonsoon = sys.type===MONSOON;
+    let previousOrganization = sys.organization;
     
     let targetWarmCore = (lnd ?
         sys.lowerWarmCore :
@@ -935,18 +993,28 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
     sys.organization -= pow(1.3,20-SST)*tropicalness;
     sys.organization = constrain(sys.organization,0,100);
     sys.organization /= 100;
+    if(isMonsoon && sys.organization>previousOrganization)
+        sys.organization = lerp(previousOrganization,sys.organization,0.25);
 
+    updateWindFieldStructure(sys,shear,lnd);
+    let sizeFactors = windPressureSizeFactors(sys);
     let targetPressure = 1010-25*log((lnd||SST<25)?1:map(SST,25,30,1,2))/log(1.17);
     targetPressure = lerp(1010,targetPressure,pow(sys.organization,3));
-    sys.pressure = lerp(sys.pressure,targetPressure,(sys.pressure>targetPressure?0.05:0.08)*tropicalness);
-    sys.pressure -= random(-3,3.5)*nontropicalness;
-    if(sys.organization<0.3) sys.pressure += random(-2,2.5)*tropicalness;
+    targetPressure = 1010-(1010-targetPressure)*sizeFactors.pressure;
+    let pressureRate = (sys.pressure>targetPressure?0.05:0.08)*tropicalness;
+    if(isMonsoon && sys.pressure>targetPressure) pressureRate *= 0.25;
+    sys.pressure = lerp(sys.pressure,targetPressure,pressureRate);
+    let pressureNoiseFactor = isMonsoon ? 0.35 : 1;
+    sys.pressure -= random(-3,3.5)*nontropicalness*pressureNoiseFactor;
+    if(sys.organization<0.3) sys.pressure += random(-2,2.5)*tropicalness*pressureNoiseFactor;
     sys.pressure += random(constrain(970-sys.pressure,0,40))*nontropicalness;
     sys.pressure += 0.5*sys.interaction.shear/(1+map(sys.lowerWarmCore,0,1,4,0));
     sys.pressure += map(jet,0,75,5*pow(1-sys.depth,4),0,true);
 
-    let targetWind = map(sys.pressure,1030,900,1,160)*map(sys.lowerWarmCore,1,0,1,0.6);
-    sys.windSpeed = lerp(sys.windSpeed,targetWind,0.15);
+    let targetWind = max(1,map(sys.pressure,1030,900,1,160)*map(sys.lowerWarmCore,1,0,1,0.6)*sizeFactors.wind);
+    if(isMonsoon) targetWind = min(65,targetWind);
+    let windRate = isMonsoon && targetWind>sys.windSpeed ? 0.04 : 0.15;
+    sys.windSpeed = lerp(sys.windSpeed,targetWind,windRate);
 
     let targetDepth = map(
         sys.upperWarmCore,
@@ -970,6 +1038,8 @@ STORM_ALGORITHM[SIM_MODE_EXPERIMENTAL].core = function(sys,u){
     let lnd = u.land();
     let moisture = u.f("moisture");
     let shear = u.f("shear").mag()+sys.interaction.shear;
+    let isMonsoon = sys.type===MONSOON;
+    let previousOrganization = sys.organization;
     
     sys.lowerWarmCore = lerp(sys.lowerWarmCore,0,map(jet,0,75,0.07,0));
     sys.lowerWarmCore = lerp(sys.lowerWarmCore,1,map(jet,50,100,0,map(SST,16,26,0,0.13,true),true));
@@ -987,22 +1057,29 @@ STORM_ALGORITHM[SIM_MODE_EXPERIMENTAL].core = function(sys,u){
     if(lnd>0.7)
         sys.organization = lerp(sys.organization,0,0.03);
     sys.organization = constrain(sys.organization,0,1);
+    if(isMonsoon && sys.organization>previousOrganization)
+        sys.organization = lerp(previousOrganization,sys.organization,0.25);
 
+    updateWindFieldStructure(sys,shear,lnd);
+    let sizeFactors = windPressureSizeFactors(sys);
     let hardCeiling = map(SST,21,31,1015,880);
     if(lnd)
         hardCeiling = 990;
     let softCeiling = map(sys.organization,0.93,0.98,lerp(1020,hardCeiling,0.7),hardCeiling,true);
+    softCeiling = 1010-(1010-softCeiling)*sizeFactors.pressure;
     sys.pressure = lerp(sys.pressure,1032,0.006);
     sys.pressure = lerp(sys.pressure,980,(1-tropicalness)*map(jet,0,75,0.025,0,true));
-    sys.pressure = lerp(sys.pressure,softCeiling,tropicalness*sys.organization*0.03);
+    sys.pressure = lerp(sys.pressure,softCeiling,tropicalness*sys.organization*0.03*(isMonsoon ? 0.25 : 1));
     if(sys.pressure<1000)
         sys.pressure = lerp(sys.pressure,1000,tropicalness*(1-sys.organization)*0.01);
     sys.pressure = lerp(sys.pressure,1040,map(sys.pos.y,HEIGHT*0.97,HEIGHT,0,0.15,true));
     sys.pressure = lerp(sys.pressure,1040,map(lnd,0.8,0.93,0,0.2,true));
     sys.pressure += random(-1,1);
 
-    let targetWind = map(sys.pressure,1030,900,1,160)*map(sys.lowerWarmCore,1,0,1,0.6);
-    sys.windSpeed = lerp(sys.windSpeed,targetWind,0.15);
+    let targetWind = max(1,map(sys.pressure,1030,900,1,160)*map(sys.lowerWarmCore,1,0,1,0.6)*sizeFactors.wind);
+    if(isMonsoon) targetWind = min(65,targetWind);
+    let windRate = isMonsoon && targetWind>sys.windSpeed ? 0.04 : 0.15;
+    sys.windSpeed = lerp(sys.windSpeed,targetWind,windRate);
 
     sys.depth = lerp(sys.depth,1,(1-tropicalness)*0.02);
     sys.depth = lerp(sys.depth,0,tropicalness*(1-sys.organization)*0.02);
@@ -1058,6 +1135,16 @@ STORM_ALGORITHM.defaults.typeDetermination = function(sys,u){
             break;
         case TROPWAVE:
             sys.type = sys.lowerWarmCore<0.55 ? EXTROP : (sys.organization<0.45 || sys.windSpeed<25) ? sys.upperWarmCore<0.56 ? EXTROP : TROPWAVE : sys.upperWarmCore<0.56 ? SUBTROP : TROP;
+            break;
+        case MONSOON:
+            if(sys.lowerWarmCore<0.5)
+                sys.type = EXTROP;
+            else if(sys.windSpeed<20)
+                sys.type = sys.upperWarmCore<0.52 ? EXTROP : TROPWAVE;
+            else if(sys.organization>=0.72 && sys.upperWarmCore>=0.62)
+                sys.type = TROP;
+            else if(sys.organization>=0.78)
+                sys.type = SUBTROP;
             break;
         default:
             sys.type = sys.lowerWarmCore<0.6 ? EXTROP : (sys.organization<0.45 || sys.windSpeed<25) ? sys.upperWarmCore<0.57 ? EXTROP : TROPWAVE : sys.upperWarmCore<0.57 ? SUBTROP : TROP;
