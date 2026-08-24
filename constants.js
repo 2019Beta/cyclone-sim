@@ -1,5 +1,5 @@
 const TITLE = "Cyclone Simulator";
-const VERSION_NUMBER = "0.4.26";
+const VERSION_NUMBER = "0.4.28";
 
 const SAVE_FORMAT = 7;  // Format #7 in use starting in v0.4
 const EARLIEST_COMPATIBLE_FORMAT = 0;
@@ -262,6 +262,13 @@ const TROPWAVE = 3;
 // Keep new storm types at the end so numeric IDs in existing saves remain valid.
 const MONSOON = 4;
 const STORM_TYPES = 5;
+const MONSOON_ICON = Object.freeze({
+    symbol: 'MD',
+    centerDiameter: 1.15,
+    selectedDiameter: 1.35,
+    circulationWidth: 2.25,
+    circulationHeight: 1.6
+});
 const KEY_LEFT_BRACKET = 219;
 const KEY_RIGHT_BRACKET = 221;
 const KEY_F11 = 122;

@@ -923,10 +923,7 @@ STORM_ALGORITHM.defaults.steering = function(sys,vec,u){
 
 // -- Core -- //
 
-function updateWindFieldStructure(sys,shear,lnd){
-    if(!Number.isFinite(sys.radiusOfMaxWind))
-        sys.radiusOfMaxWind = StormData.estimateRadiusOfMaxWind(sys.pressure,sys.windSpeed,sys.type);
-
+function targetRadiusOfMaxWind(sys,shear,lnd){
     let polewardFraction = constrain((HEIGHT-sys.basin.hemY(sys.pos.y))/HEIGHT,0,1);
     let targetRadius = map(constrain(sys.windSpeed,20,160),20,160,52,12);
     targetRadius += 18*polewardFraction;
@@ -936,9 +933,23 @@ function updateWindFieldStructure(sys,shear,lnd){
     else if(sys.type===SUBTROP) targetRadius += 14;
     else if(!tropOrSub(sys.type)) targetRadius += 18;
     if(lnd) targetRadius += 6;
-    targetRadius = StormData.constrainRadiusOfMaxWind(targetRadius,sys.type);
+    return StormData.constrainRadiusOfMaxWind(targetRadius,sys.type);
+}
+
+function updateWindFieldStructure(sys,shear,lnd){
+    if(!Number.isFinite(sys.radiusOfMaxWind))
+        sys.radiusOfMaxWind = StormData.estimateRadiusOfMaxWind(sys.pressure,sys.windSpeed,sys.type);
+
+    let targetRadius = targetRadiusOfMaxWind(sys,shear,lnd);
 
     let adjustmentRate = sys.type===MONSOON ? 0.0015 : tropOrSub(sys.type) ? 0.004 : 0.01;
+    if(sys.kaboom===2 && tropOrSub(sys.type) && sys.type!==MONSOON && sys.radiusOfMaxWind>targetRadius){
+        // Rapid intensification is accompanied by inner-core contraction. Scale
+        // the response with the structural gap so compact and broad cyclones do
+        // not collapse toward one hard-coded pressure/wind pair.
+        let contractionGap = sys.radiusOfMaxWind-targetRadius;
+        adjustmentRate = max(adjustmentRate,map(contractionGap,0,45,adjustmentRate,0.24,true));
+    }
     sys.radiusOfMaxWind = StormData.constrainRadiusOfMaxWind(
         lerp(sys.radiusOfMaxWind,targetRadius,adjustmentRate)+random(-0.035,0.035),
         sys.type
@@ -953,11 +964,36 @@ function windPressureSizeFactors(sys){
             wind: map(radius,45,110,0.86,0.65)
         };
     }
+    if(sys.type===EXTROP){
+        let radius = constrain(sys.radiusOfMaxWind,25,140);
+        return {
+            pressure: map(radius,25,140,0.96,1.3),
+            wind: map(radius,25,140,0.96,0.72)
+        };
+    }
     let radius = constrain(sys.radiusOfMaxWind,8,70);
     return {
         pressure: map(radius,8,70,0.82,1.22),
         wind: map(radius,8,70,1.18,0.82)
     };
+}
+
+function extratropicalDevelopmentPotential(jetOffset,moisture,shear,lnd){
+    // Mid-latitude cyclones feed on the baroclinic zone near the jet. Strong
+    // vertical shear is therefore supportive here (the opposite of a TC),
+    // while moisture and an ocean surface make explosive deepening likelier.
+    let jetSupport = map(abs(jetOffset),105,8,0,1,true);
+    let baroclinicity = map(shear,1.2,7,0,1,true);
+    let moistureSupport = map(moisture,0.2,0.75,0.62,1,true);
+    let surfaceSupport = lnd ? map(lnd,0.15,0.9,0.9,0.18,true) : 1;
+    return constrain(jetSupport*(0.42+0.58*baroclinicity)*moistureSupport*surfaceSupport,0,1);
+}
+
+function pressureWindTarget(sys,sizeFactors){
+    // Cold-core cyclones can convert a deep pressure gradient into stronger
+    // surface winds than the old 0.6 multiplier allowed.
+    let thermalEfficiency = map(sys.lowerWarmCore,0,1,sys.type===EXTROP ? 0.78 : 0.68,1,true);
+    return max(1,map(sys.pressure,1030,900,1,160)*thermalEfficiency*sizeFactors.wind);
 }
 
 STORM_ALGORITHM.defaults.core = function(sys,u){
@@ -980,6 +1016,7 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
     sys.upperWarmCore = constrain(sys.upperWarmCore,0,1);
     let tropicalness = constrain(map(sys.lowerWarmCore,0.5,1,0,1),0,sys.upperWarmCore);
     let nontropicalness = constrain(map(sys.lowerWarmCore,0.75,0,0,1),0,1);
+    let extratropicalPotential = extratropicalDevelopmentPotential(jet,moisture,shear,lnd);
 
     sys.organization *= 100;
     if(!lnd) sys.organization += sq(map(SST,20,29,0,1,true))*3*tropicalness;
@@ -1005,13 +1042,17 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
     if(isMonsoon && sys.pressure>targetPressure) pressureRate *= 0.25;
     sys.pressure = lerp(sys.pressure,targetPressure,pressureRate);
     let pressureNoiseFactor = isMonsoon ? 0.35 : 1;
-    sys.pressure -= random(-3,3.5)*nontropicalness*pressureNoiseFactor;
+    let extratropicalTarget = 1014-58*pow(extratropicalPotential,1.35);
+    let extratropicalRate = map(extratropicalPotential,0.25,1,0.002,0.034,true)*nontropicalness;
+    sys.pressure = lerp(sys.pressure,extratropicalTarget,extratropicalRate);
+    if(extratropicalPotential>0.86 && !lnd)
+        sys.pressure -= map(extratropicalPotential,0.86,1,0,0.5,true)*nontropicalness;
+    sys.pressure += random(-0.65,0.85)*(1-extratropicalPotential)*nontropicalness*pressureNoiseFactor;
     if(sys.organization<0.3) sys.pressure += random(-2,2.5)*tropicalness*pressureNoiseFactor;
-    sys.pressure += random(constrain(970-sys.pressure,0,40))*nontropicalness;
     sys.pressure += 0.5*sys.interaction.shear/(1+map(sys.lowerWarmCore,0,1,4,0));
     sys.pressure += map(jet,0,75,5*pow(1-sys.depth,4),0,true);
 
-    let targetWind = max(1,map(sys.pressure,1030,900,1,160)*map(sys.lowerWarmCore,1,0,1,0.6)*sizeFactors.wind);
+    let targetWind = pressureWindTarget(sys,sizeFactors);
     if(isMonsoon) targetWind = min(65,targetWind);
     let windRate = isMonsoon && targetWind>sys.windSpeed ? 0.04 : 0.15;
     sys.windSpeed = lerp(sys.windSpeed,targetWind,windRate);
@@ -1050,6 +1091,8 @@ STORM_ALGORITHM[SIM_MODE_EXPERIMENTAL].core = function(sys,u){
     sys.lowerWarmCore = constrain(sys.lowerWarmCore,0,1);
     sys.upperWarmCore = constrain(sys.upperWarmCore,0,1);
     let tropicalness = (sys.lowerWarmCore+sys.upperWarmCore)/2;
+    let extratropicalness = 1-tropicalness;
+    let extratropicalPotential = extratropicalDevelopmentPotential(jet,moisture,shear,lnd);
 
     if(!lnd)
         sys.organization = lerp(sys.organization,1,sq(tropicalness)*map(SST,21,31,0,0.05,true));
@@ -1068,18 +1111,17 @@ STORM_ALGORITHM[SIM_MODE_EXPERIMENTAL].core = function(sys,u){
     let softCeiling = map(sys.organization,0.93,0.98,lerp(1020,hardCeiling,0.7),hardCeiling,true);
     softCeiling = 1010-(1010-softCeiling)*sizeFactors.pressure;
     sys.pressure = lerp(sys.pressure,1032,0.006);
-    sys.pressure = lerp(sys.pressure,980,(1-tropicalness)*map(jet,0,75,0.025,0,true));
+    let extratropicalTarget = 1014-68*pow(extratropicalPotential,1.3);
+    let extratropicalRate = map(extratropicalPotential,0.2,1,0.003,0.04,true)*extratropicalness;
+    sys.pressure = lerp(sys.pressure,extratropicalTarget,extratropicalRate);
+    if(extratropicalPotential>0.84 && !lnd)
+        sys.pressure -= map(extratropicalPotential,0.84,1,0,0.65,true)*extratropicalness;
     sys.pressure = lerp(sys.pressure,softCeiling,tropicalness*sys.organization*0.03*(isMonsoon ? 0.25 : 1));
     if(sys.pressure<1000)
         sys.pressure = lerp(sys.pressure,1000,tropicalness*(1-sys.organization)*0.01);
     sys.pressure = lerp(sys.pressure,1040,map(sys.pos.y,HEIGHT*0.97,HEIGHT,0,0.15,true));
     sys.pressure = lerp(sys.pressure,1040,map(lnd,0.8,0.93,0,0.2,true));
     sys.pressure += random(-1,1);
-
-    let targetWind = max(1,map(sys.pressure,1030,900,1,160)*map(sys.lowerWarmCore,1,0,1,0.6)*sizeFactors.wind);
-    if(isMonsoon) targetWind = min(65,targetWind);
-    let windRate = isMonsoon && targetWind>sys.windSpeed ? 0.04 : 0.15;
-    sys.windSpeed = lerp(sys.windSpeed,targetWind,windRate);
 
     sys.depth = lerp(sys.depth,1,(1-tropicalness)*0.02);
     sys.depth = lerp(sys.depth,0,tropicalness*(1-sys.organization)*0.02);
@@ -1102,8 +1144,14 @@ STORM_ALGORITHM[SIM_MODE_EXPERIMENTAL].core = function(sys,u){
     if(sys.kaboom){
         if((!lnd || namedBoom) && (sys.organization > 0.8 || sys.kaboom === 2)){
             sys.kaboom = 2;
-            if(sys.pressure > 600)
-                sys.pressure -= random(5,10);
+            if(sys.pressure > 600){
+                // Let the inner core contract before accepting the full pressure
+                // fall. This keeps broad storms as legitimate outliers without
+                // making a large pressure/wind mismatch the normal boom state.
+                let structuralRadius = targetRadiusOfMaxWind(sys,shear,lnd);
+                let structuralReadiness = constrain(structuralRadius/sys.radiusOfMaxWind,0,1);
+                sys.pressure -= random(5,10)*structuralReadiness;
+            }
             sys.organization = 1;
             sys.lowerWarmCore = 1;
             if(sys.upperWarmCore < 0.5)
@@ -1118,6 +1166,15 @@ STORM_ALGORITHM[SIM_MODE_EXPERIMENTAL].core = function(sys,u){
         }
     }else if(random()<0.0001)
         sys.kaboom = 1;
+
+    // Kaboom changes pressure and core structure above, so derive the wind from
+    // those final values in the same tick. A faster response prevents rapidly
+    // deepening storms from retaining a wind speed that belongs to an old pressure.
+    let targetWind = pressureWindTarget(sys,sizeFactors);
+    if(isMonsoon) targetWind = min(65,targetWind);
+    let windRate = isMonsoon && targetWind>sys.windSpeed ? 0.04 : 0.15;
+    if(sys.kaboom===2 && targetWind>sys.windSpeed) windRate = 0.85;
+    sys.windSpeed = lerp(sys.windSpeed,targetWind,windRate);
 
     if(sys.pressure > 1030 || sys.interaction.kill > 0)
         sys.kill = true;

@@ -90,7 +90,7 @@ class Scale{
             c = this.get(arguments[0]);
             subtropical = arguments[0].type===SUBTROP;
             color = this.getColor(arguments[0]);
-            if(arguments[0].type===MONSOON) return {symbol:'MD',arms:0,color};
+            if(arguments[0].type===MONSOON) return {symbol:MONSOON_ICON.symbol,arms:0,color:COLORS.storm[MONSOON]};
         }else{
             c = arguments[0];
             subtropical = arguments[1];

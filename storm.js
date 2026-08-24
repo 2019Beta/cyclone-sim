@@ -192,79 +192,115 @@ class Storm{
                 }
                 break;
             case EXTROP:
+                let bomb = t!=="peak" && this.isBombCyclone(t);
                 if(hasbeenTC){
-                    str += 'Post-Tropical Cyclone';
+                    str += bomb ? 'Post-Tropical Bomb Cyclone' : 'Post-Tropical Cyclone';
                     if(name) str += ' ' + name;
                 }else{
-                    if(name) str += 'Invest ' + name;
+                    if(bomb) str += 'Bomb Cyclone';
+                    else if(name) str += 'Invest ' + name;
                     else str += 'Extratropical Cyclone';
+                    if(bomb && name) str += ' ' + name;
                 }
                 break;
         }
         return str;
     }
 
-    getWindRadii(data,previousData){
-        if(!(data instanceof StormData) || !tropOrSub(data.type) || data.windSpeed<34) return [];
+    isBombCyclone(t){
+        if(!Number.isFinite(t)) return false;
+        let data = this.getStormDataByTick(t,true);
+        if(!(data instanceof StormData) || data.type!==EXTROP) return false;
 
-        // Approximate quadrant radii in nautical miles. Translation makes the
-        // wind field broader on the right side of motion in the northern
-        // hemisphere (left side in the southern hemisphere), while the small
-        // smooth perturbation keeps all four quadrants from looking identical.
-        let strongSideX = 0;
-        let strongSideY = 0;
-        let motionAsymmetry = 0;
+        // The Bergeron definition is a 24 h pressure fall of 24 hPa at 60°,
+        // adjusted by latitude. Clamp the latitude used by the definition so
+        // unusually low-latitude systems are not labelled from a tiny fall.
+        let previous = this.getStormDataByTick(t-24,true);
+        if(!(previous instanceof StormData)) return false;
+        let latitude = constrain(abs(data.coord().latitude),25,60);
+        let threshold = 24*Math.sin(latitude*Math.PI/180)/Math.sin(60*Math.PI/180);
+        return previous.pressure-data.pressure>=threshold;
+    }
+
+    getWindRadii(data,previousData,motionTicks=ADVISORY_TICKS){
+        if(!(data instanceof StormData) || (!tropOrSub(data.type) && data.type!==EXTROP)) return [];
+
+        // Convert the displacement between fixes to a storm-motion vector in
+        // knots. Screen y increases southward, so northward motion is negative y.
+        let motionX = 0;
+        let motionY = 0;
         if(previousData instanceof StormData){
-            let dx = data.pos.x-previousData.pos.x;
-            let dy = data.pos.y-previousData.pos.y;
-            let magnitude = Math.hypot(dx,dy);
-            if(magnitude>0.01){
-                let hemisphereDirection = this.basin.SHem ? -1 : 1;
-                strongSideX = -dy/magnitude*hemisphereDirection;
-                strongSideY = dx/magnitude*hemisphereDirection;
-                motionAsymmetry = 0.08+0.12*constrain(magnitude/(ADVISORY_TICKS*2),0,1);
+            let currentCoord = data.coord();
+            let previousCoord = previousData.coord();
+            let longitudeDelta = currentCoord.longitude-previousCoord.longitude;
+            if(longitudeDelta>180) longitudeDelta -= 360;
+            else if(longitudeDelta<-180) longitudeDelta += 360;
+            let averageLatitude = (currentCoord.latitude+previousCoord.latitude)/2;
+            let hours = max(1,motionTicks*TICK_DURATION/3600000);
+            motionX = longitudeDelta*60*Math.cos(averageLatitude*Math.PI/180)/hours;
+            motionY = -(currentCoord.latitude-previousCoord.latitude)*60/hours;
+
+            // Very fast simulated systems otherwise make the idealized uniform
+            // translation dominate even infinitely far from the cyclone.
+            let motionMagnitude = Math.hypot(motionX,motionY);
+            if(motionMagnitude>30){
+                motionX *= 30/motionMagnitude;
+                motionY *= 30/motionMagnitude;
             }
         }
 
         let maximumWind = data.windSpeed;
         let pressureDeficit = max(1,1010-data.pressure);
         let expectedDeficit = max(8,(maximumWind-25)*0.78);
-        let pressureBreadth = constrain(Math.sqrt(pressureDeficit/expectedDeficit),0.72,1.45);
+        let pressureBreadth = constrain(Math.sqrt(pressureDeficit/expectedDeficit),0.72,data.type===EXTROP ? 1.75 : 1.45);
         let radiusOfMaxWind = Number.isFinite(data.radiusOfMaxWind) ?
             data.radiusOfMaxWind : StormData.estimateRadiusOfMaxWind(data.pressure,maximumWind,data.type);
-        let effectiveInnerRadius = radiusOfMaxWind*pressureBreadth*(data.type===MONSOON ? 1.4 : 1);
-        let decayExponent = constrain(0.62/pressureBreadth,0.38,0.78);
+        let effectiveInnerRadius = radiusOfMaxWind*pressureBreadth*(data.type===MONSOON ? 1.4 : data.type===EXTROP ? 1.18 : 1);
+        let decayExponent = constrain((data.type===EXTROP ? 0.54 : 0.62)/pressureBreadth,0.34,0.78);
         let configs = [
-            {threshold:34, max:420},
-            {threshold:50, max:260},
-            {threshold:64, max:180}
+            {threshold:34, softLimit:420},
+            {threshold:50, softLimit:260},
+            {threshold:64, softLimit:180}
         ];
-        let quadrantDirections = [
-            {x: Math.SQRT1_2, y:-Math.SQRT1_2}, // NE
-            {x: Math.SQRT1_2, y: Math.SQRT1_2}, // SE
-            {x:-Math.SQRT1_2, y: Math.SQRT1_2}, // SW
-            {x:-Math.SQRT1_2, y:-Math.SQRT1_2}  // NW
-        ];
+        let sampleCount = 48;
+        let circulationDirection = this.basin.SHem ? -1 : 1;
+        let motionMagnitudeSq = sq(motionX)+sq(motionY);
 
         let result = [];
         for(let level=0;level<configs.length;level++){
             let config = configs[level];
+            // The reported maximum wind already represents the strongest wind
+            // anywhere in the system. Motion may shape a qualifying wind field,
+            // but it must never create a threshold above that reported maximum.
             if(maximumWind<config.threshold) continue;
-            let baseRadius = min(
-                effectiveInnerRadius*pow(maximumWind/config.threshold,1/decayExponent),
-                config.max
-            );
-            let quadrants = [];
-            for(let q=0;q<quadrantDirections.length;q++){
-                let direction = quadrantDirections[q];
-                let levelAsymmetry = 1.15-level*0.1;
-                let motionBias = (direction.x*strongSideX+direction.y*strongSideY)*motionAsymmetry*levelAsymmetry;
-                let smoothAmplitude = data.type===MONSOON ? 0.17-level*0.02 : 0.09-level*0.015;
-                let smoothBias = smoothAmplitude*Math.sin(data.pos.x*0.035+data.pos.y*0.021+q*1.71+level*0.83);
-                let factor = constrain(1+motionBias+smoothBias,data.type===MONSOON ? 0.58 : 0.72,data.type===MONSOON ? 1.42 : 1.28);
-                quadrants.push(min(config.max,round(baseRadius*factor/5)*5));
+            // Keep extreme-mode wind fields usable without pinning every large
+            // storm to exactly the same radius. Past the former hard limit the
+            // radius continues to grow logarithmically instead of being clipped.
+            let softenRadius = radius=>radius<=config.softLimit ? radius :
+                config.softLimit*(1+0.35*Math.log(radius/config.softLimit));
+            let radii = [];
+            let hasThresholdWind = false;
+            for(let sample=0;sample<sampleCount;sample++){
+                let angle = -PI+sample*TAU/sampleCount;
+                // Tangential cyclone-relative wind: counter-clockwise in the
+                // northern hemisphere and clockwise in the southern hemisphere.
+                let tangentX = circulationDirection*Math.sin(angle);
+                let tangentY = -circulationDirection*Math.cos(angle);
+                let alongMotion = motionX*tangentX+motionY*tangentY;
+                let discriminant = sq(alongMotion)+sq(config.threshold)-motionMagnitudeSq;
+                let requiredCycloneWind = discriminant>0 ?
+                    -alongMotion+Math.sqrt(discriminant) : 0;
+                let radius = 0;
+                if(requiredCycloneWind<=maximumWind){
+                    radius = effectiveInnerRadius*pow(maximumWind/max(1,requiredCycloneWind),1/decayExponent);
+                    hasThresholdWind = true;
+                }
+                let smoothAmplitude = data.type===MONSOON ? 0.17-level*0.02 : data.type===EXTROP ? 0.15-level*0.018 : 0.09-level*0.015;
+                let smoothBias = smoothAmplitude*Math.sin(data.pos.x*0.035+data.pos.y*0.021+angle*2+level*0.83);
+                let factor = constrain(1+smoothBias,data.type===MONSOON ? 0.72 : data.type===EXTROP ? 0.76 : 0.84,data.type===MONSOON ? 1.28 : data.type===EXTROP ? 1.24 : 1.16);
+                radii.push(round(softenRadius(radius*factor)/5)*5);
             }
-            result.push({threshold:config.threshold,quadrants});
+            if(hasThresholdWind) result.push({threshold:config.threshold,radii});
         }
         return result;
     }
@@ -275,16 +311,23 @@ class Storm{
         if(!(data instanceof StormData)) return;
 
         let previousData;
+        let motionTicks = ADVISORY_TICKS;
         if(viewTick===this.basin.tick && this.current){
             let previousIndex = this.record.length-1;
             if(viewTick%ADVISORY_TICKS===0) previousIndex--;
-            if(previousIndex>=0) previousData = this.record[previousIndex];
+            if(previousIndex>=0){
+                previousData = this.record[previousIndex];
+                motionTicks = viewTick-this.get_tick_from_record_index(previousIndex);
+            }
         }else{
             let index = floor(viewTick/ADVISORY_TICKS)-ceil(this.birthTime/ADVISORY_TICKS);
-            if(index>0) previousData = this.record[index-1];
+            if(index>0){
+                previousData = this.record[index-1];
+                motionTicks = this.get_tick_from_record_index(index)-this.get_tick_from_record_index(index-1);
+            }
         }
 
-        let radii = this.getWindRadii(data,previousData);
+        let radii = this.getWindRadii(data,previousData,motionTicks);
         if(radii.length<1) return;
 
         let mapData = MAP_TYPES[this.basin.mapType];
@@ -310,15 +353,12 @@ class Storm{
             windFields.fill(...style.fill);
             windFields.stroke(...style.stroke);
             windFields.beginShape();
-            for(let q=0;q<4;q++){
-                let radius = level.quadrants[q];
+            for(let sample=0;sample<level.radii.length;sample++){
+                let radius = level.radii[sample];
                 let radiusX = radius/(60*latitudeCosine)*longitudeScale;
                 let radiusY = radius/60*latitudeScale;
-                let startAngle = -HALF_PI+q*HALF_PI;
-                for(let step=0;step<=12;step++){
-                    let angle = startAngle+step*HALF_PI/12;
-                    windFields.vertex(Math.cos(angle)*radiusX,Math.sin(angle)*radiusY);
-                }
+                let angle = -PI+sample*TAU/level.radii.length;
+                windFields.vertex(Math.cos(angle)*radiusX,Math.sin(angle)*radiusY);
             }
             windFields.endShape(CLOSE);
         }
@@ -361,23 +401,21 @@ class Storm{
                 }
             };
             let drawMonsoonIcon = selectedOutline=>{
-                let iconColor = selectedOutline ? 255 : scaleIconData.color;
+                let iconColor = selectedOutline ? 255 : COLORS.storm[MONSOON];
                 stormIcons.push();
-                if(basin.SHem) stormIcons.scale(1,-1);
-                stormIcons.rotate(this.rotation*0.22);
                 stormIcons.noFill();
                 stormIcons.stroke(iconColor);
                 stormIcons.strokeWeight(selectedOutline ? 2.5 : 1.5);
-                stormIcons.arc(0,0,DIAMETER*2.25,DIAMETER*1.6,-PI*0.12,PI*0.72);
-                stormIcons.arc(0,0,DIAMETER*2.25,DIAMETER*1.6,PI*0.88,PI*1.72);
+                stormIcons.arc(0,0,DIAMETER*MONSOON_ICON.circulationWidth,DIAMETER*MONSOON_ICON.circulationHeight,-PI*0.12,PI*0.72);
+                stormIcons.arc(0,0,DIAMETER*MONSOON_ICON.circulationWidth,DIAMETER*MONSOON_ICON.circulationHeight,PI*0.88,PI*1.72);
                 stormIcons.pop();
                 stormIcons.noStroke();
-                stormIcons.fill(selectedOutline ? 255 : scaleIconData.color);
-                stormIcons.ellipse(0,0,DIAMETER*(selectedOutline ? 1.35 : 1.15));
+                stormIcons.fill(iconColor);
+                stormIcons.ellipse(0,0,DIAMETER*(selectedOutline ? MONSOON_ICON.selectedDiameter : MONSOON_ICON.centerDiameter));
                 if(!selectedOutline){
-                    stormIcons.fill(brightness(scaleIconData.color)<75 ? 240 : 0);
+                    stormIcons.fill(brightness(COLORS.storm[MONSOON])<75 ? 240 : 0);
                     stormIcons.textSize(6.5);
-                    stormIcons.text('MD',0,0);
+                    stormIcons.text(MONSOON_ICON.symbol,0,0);
                 }
             };
             stormIcons.push();
@@ -974,12 +1012,16 @@ class StormData{
         let expectedDeficit = max(8,(wind-25)*0.78);
         let pressureDeficit = max(1,1010-pressure);
         let breadth = constrain(Math.sqrt(pressureDeficit/expectedDeficit),0.75,1.35);
-        let typeFactor = t===MONSOON ? 1.65 : t===SUBTROP ? 1.25 : t===EXTROP ? 1.4 : 1;
+        let typeFactor = t===MONSOON ? 1.65 : t===SUBTROP ? 1.25 : t===EXTROP ? 1.65 : 1;
         return StormData.constrainRadiusOfMaxWind(climatologicalRadius*breadth*typeFactor,t);
     }
 
     static constrainRadiusOfMaxWind(radius,type){
-        return constrain(radius,type===MONSOON ? 45 : 7,type===MONSOON ? 110 : 90);
+        return constrain(
+            radius,
+            type===MONSOON ? 45 : type===EXTROP ? 18 : 7,
+            type===MONSOON ? 110 : type===EXTROP ? 140 : 90
+        );
     }
 
     coord(){
