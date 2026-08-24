@@ -1,5 +1,5 @@
 const TITLE = "Cyclone Simulator";
-const VERSION_NUMBER = "0.4.29";
+const VERSION_NUMBER = "0.4.30";
 
 const SAVE_FORMAT = 7;  // Format #7 in use starting in v0.4
 const EARLIEST_COMPATIBLE_FORMAT = 0;
@@ -337,9 +337,10 @@ const ENVDATA_SAVE_MULT = 10000;
 const HELP_TEXT = "Keyboard Controls:\n" +
     "\t\tSPACE - Pause/resume simulation\n" +
     "\t\tA - Step simulation one hour while paused\n" +
-    "\t\tE - Cycle through map layers (including isobars)\n" +
+    "\t\tE - Cycle through map layers (including wind and isobars)\n" +
     "\t\tF - Toggle wind field display\n" +
     "\t\tT - Cycle through track display modes\n" +
+    "\t\tV - Toggle storm icons\n" +
     "\t\tW - Toggle intensity indicators below storm icons (kts / hPa)\n" +
     "\t\tM - Toggle magnifying glass for map layers\n" +
     "\t\t[ - Decrease simulation speed (half)\n" +

@@ -7,6 +7,12 @@ body{
 	font-family: Calibri, Arial;
 }
 
+canvas:fullscreen{
+	object-fit: contain;
+	object-position: center;
+	background: black;
+}
+
 a{
 	display: inline-block;
 	text-decoration: none;

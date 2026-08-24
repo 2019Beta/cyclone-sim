@@ -1,5 +1,12 @@
 About: A p5.js tropical cyclone simulation game
 
+v0.4.30 (2026-08-24):
+    + Added a color-filled surface wind field map showing the background flow and cyclone circulations
+        > Press E to cycle to the wind field layer
+        > Wind speed and direction are shown at the pointer or selected storm
+    + Added an option to show or hide storm icons
+        > Hotkey: "V"
+    * Fixed mouse coordinates being offset in fullscreen mode when the screen and game aspect ratios differ
 v0.4.29 (2026-08-24):
     + Added tropical cyclone intensification ahead of upper-level troughs when a favourable outflow channel develops
     + Added an option to show or hide wind fields

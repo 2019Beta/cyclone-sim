@@ -882,6 +882,52 @@ ENV_DEFS[SIM_MODE_MEGABLOBS].moisture = {};
 ENV_DEFS[SIM_MODE_EXPERIMENTAL].moisture = {};
 ENV_DEFS[SIM_MODE_SPOOKY].moisture = {};
 
+// -- surface wind field -- //
+
+ENV_DEFS.defaults.surfaceWind = {
+    displayName: 'Surface wind field',
+    version: 0,
+    mapFunc: (u,x,y,z)=>u.basin.env.getSurfaceWind(x,y,z,u.vec),
+    displayFormat: v=>displayWindspeed(round(v.mag()),1) + ' ' + compassHeading(v.heading()),
+    vector: true,
+    vectorColorFill: true,
+    fillResolution: 6,
+    fillAlpha: 220,
+    noWobble: true,
+    hueMap: v=>{
+        colorMode(RGB);
+        let stops = [
+            [0,64,132,190],
+            [18,76,176,190],
+            [34,112,202,157],
+            [50,201,218,126],
+            [64,240,202,105],
+            [85,218,116,92],
+            [110,167,55,111],
+            [145,75,30,105]
+        ];
+        for(let i=1;i<stops.length;i++){
+            if(v<=stops[i][0]){
+                let lower = stops[i-1];
+                let upper = stops[i];
+                return lerpColor(
+                    color(lower[1],lower[2],lower[3]),
+                    color(upper[1],upper[2],upper[3]),
+                    map(v,lower[0],upper[0],0,1,true)
+                );
+            }
+        }
+        let last = stops[stops.length-1];
+        return color(last[1],last[2],last[3]);
+    }
+};
+ENV_DEFS[SIM_MODE_NORMAL].surfaceWind = {};
+ENV_DEFS[SIM_MODE_HYPER].surfaceWind = {};
+ENV_DEFS[SIM_MODE_WILD].surfaceWind = {};
+ENV_DEFS[SIM_MODE_MEGABLOBS].surfaceWind = {};
+ENV_DEFS[SIM_MODE_EXPERIMENTAL].surfaceWind = {};
+ENV_DEFS[SIM_MODE_SPOOKY].surfaceWind = {};
+
 // -- mean sea-level pressure / isobars -- //
 
 ENV_DEFS.defaults.pressure = {

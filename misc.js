@@ -37,15 +37,19 @@ function rescaleCanvases(s){
 
 function toggleFullscreen(){
     if(document.fullscreenElement===canvas || deviceOrientation===PORTRAIT) document.exitFullscreen();
-    else{
-        canvas.requestFullscreen().then(function(){
-            scaler = displayWidth/WIDTH;
-            rescaleCanvases(scaler);
-            if(UI.viewBasin){
-                refreshTracks(true);
-                UI.viewBasin.env.displayLayer();
-            }
-        });
+    else canvas.requestFullscreen();
+}
+
+function fullscreenScale(){
+    return min(window.innerWidth/WIDTH,window.innerHeight/HEIGHT);
+}
+
+function updateCanvasScale(){
+    scaler = document.fullscreenElement===canvas ? fullscreenScale() : 1;
+    rescaleCanvases(scaler);
+    if(UI.viewBasin){
+        refreshTracks(true);
+        UI.viewBasin.env.displayLayer();
     }
 }
 
@@ -60,10 +64,20 @@ function drawBuffer(b){
 }
 
 function getMouseX(){
+    if(document.fullscreenElement===canvas){
+        let displayScale = fullscreenScale();
+        let left = (window.innerWidth-WIDTH*displayScale)/2;
+        return floor((winMouseX-left)/displayScale);
+    }
     return floor(mouseX/scaler);
 }
 
 function getMouseY(){
+    if(document.fullscreenElement===canvas){
+        let displayScale = fullscreenScale();
+        let top = (window.innerHeight-HEIGHT*displayScale)/2;
+        return floor((winMouseY-top)/displayScale);
+    }
     return floor(mouseY/scaler);
 }
 
@@ -236,12 +250,9 @@ function upgradeLegacySaves(){
 }
 
 document.onfullscreenchange = function(){
-    if(document.fullscreenElement===null){
-        scaler = 1;
-        rescaleCanvases(scaler);
-        if(UI.viewBasin){
-            refreshTracks(true);
-            UI.viewBasin.env.displayLayer();
-        }
-    }
+    updateCanvasScale();
 };
+
+window.addEventListener('resize',function(){
+    if(document.fullscreenElement===canvas) updateCanvasScale();
+});

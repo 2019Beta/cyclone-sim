@@ -158,6 +158,9 @@ class EnvField{
             else this.accurateAfter = loadData.value.accurateAfter;
         }
         this.isVectorField = attribs.vector;
+        this.vectorColorFill = attribs.vectorColorFill;
+        this.fillResolution = attribs.fillResolution || 8;
+        this.fillAlpha = attribs.fillAlpha===undefined ? 255 : attribs.fillAlpha;
         this.noVectorFlip = attribs.noVectorFlip;   // do not reflect the output vector over the y-axis in the southern hemisphere if this is true
         this.noWobble = attribs.noWobble;
         if(attribs.hueMap)
@@ -273,6 +276,11 @@ class EnvField{
             if(simSettings.showMagGlass) this.renderMagGlass();
             return;
         }
+        if(this.isVectorField && this.vectorColorFill){
+            this.renderVectorColorFill();
+            if(simSettings.showMagGlass) this.renderMagGlass();
+            return;
+        }
         let tileSize = ceil(ENV_LAYER_TILE_SIZE*scaler);
         for(let i=0;i<WIDTH;i+=ENV_LAYER_TILE_SIZE){
             for(let j=0;j<HEIGHT;j+=ENV_LAYER_TILE_SIZE){
@@ -325,6 +333,32 @@ class EnvField{
             }
         }
         if(simSettings.showMagGlass) this.renderMagGlass();
+    }
+
+    renderVectorColorFill(){
+        let resolution = this.fillResolution;
+        let gridWidth = ceil(WIDTH/resolution)+1;
+        let gridHeight = ceil(HEIGHT/resolution)+1;
+        let colorGrid = createImage(gridWidth,gridHeight);
+        colorGrid.loadPixels();
+        for(let gridY=0;gridY<gridHeight;gridY++){
+            let y = min(HEIGHT-1,gridY*resolution);
+            for(let gridX=0;gridX<gridWidth;gridX++){
+                let x = min(WIDTH-1,gridX*resolution);
+                let v = this.get(x,y,viewTick);
+                let c = v===null ? color(0,0,50) : this.hueMap(v.mag());
+                let index = 4*(gridY*gridWidth+gridX);
+                colorGrid.pixels[index] = red(c);
+                colorGrid.pixels[index+1] = green(c);
+                colorGrid.pixels[index+2] = blue(c);
+                colorGrid.pixels[index+3] = this.fillAlpha;
+            }
+        }
+        colorGrid.updatePixels();
+        envLayer.push();
+        envLayer.drawingContext.imageSmoothingEnabled = true;
+        envLayer.image(colorGrid,0,0,envLayer.width,envLayer.height);
+        envLayer.pop();
     }
 
     renderContours(){
@@ -490,7 +524,7 @@ class EnvField{
         let centerY = getMouseY();
         magnifyingGlass.noFill();
         let vCenter = this.get(centerX,centerY,viewTick);
-        if(this.isVectorField){
+        if(this.isVectorField && !this.vectorColorFill){
             if(coordinateInCanvas(centerX,centerY) && (!this.oceanic || (land.tileContainsOcean(centerX,centerY) && !land.get(Coordinate.convertFromXY(this.basin.mapType,centerX,centerY))))){
                 let v = vCenter;
                 magnifyingGlass.push();
@@ -526,8 +560,9 @@ class EnvField{
                                 let v = this.get(x,y,viewTick);
                                 if(v!==null){
                                     let h = this.hueMap;
-                                    if(h instanceof Function) magnifyingGlass.fill(h(v));
-                                    else magnifyingGlass.fill(map(v,h[0],h[1],h[2],h[3]),100,100);
+                                    let displayValue = this.isVectorField ? v.mag() : v;
+                                    if(h instanceof Function) magnifyingGlass.fill(h(displayValue));
+                                    else magnifyingGlass.fill(map(displayValue,h[0],h[1],h[2],h[3]),100,100);
                                 }else magnifyingGlass.fill(0,0,50);
                                 magnifyingGlass.rect(i,j,1,1);
                             }
@@ -642,6 +677,10 @@ class Environment{  // Environmental fields that determine storm strength and st
                 x: data.pos.x,
                 y,
                 pressure: data.pressure,
+                windSpeed: wind,
+                radiusOfMaxWind: radius,
+                type: data.type,
+                latitudeCosine,
                 sigmaX: sigmaNm/(60*latitudeCosine)*longitudeScale,
                 sigmaY: sigmaNm/60*latitudeScale
             });
@@ -668,6 +707,47 @@ class Environment{  // Environmental fields that determine storm strength and st
             }
         }
         return constrain(background+strongestAnomaly,650,1060);
+    }
+
+    getSurfaceWind(x,y,z,target){
+        let result = target || createVector();
+        // EnvField map functions receive hemisphere-normalized coordinates.
+        let steering = this.get('LLSteering',x,y,z,true);
+        let mapData = MAP_TYPES[this.basin.mapType];
+        if(mapData.form!=='earth') mapData = MAP_TYPES[6];
+        let longitudeSpan = mapData.east-mapData.west;
+        if(longitudeSpan<=0) longitudeSpan += 360;
+        let latitudeSpan = abs(mapData.north-mapData.south);
+        let longitudeScale = WIDTH/longitudeSpan;
+        let latitudeScale = HEIGHT/latitudeSpan;
+        let latitude = Coordinate.convertFromXY(this.basin.mapType,x,this.basin.hemY(y)).latitude;
+        let latitudeCosine = max(0.25,Math.cos(latitude*Math.PI/180));
+
+        // Convert low-level steering from map units per hour to knots.
+        result.set(
+            steering.x/longitudeScale*60*latitudeCosine,
+            steering.y/latitudeScale*60
+        );
+
+        for(let system of this.getPressureSystems(z)){
+            let dx = (x-system.x)/longitudeScale*60*system.latitudeCosine;
+            let dy = (y-system.y)/latitudeScale*60;
+            let radius = Math.hypot(dx,dy);
+            if(radius<1) continue;
+            let maximumWind = system.windSpeed;
+            let innerRadius = system.radiusOfMaxWind;
+            let decayExponent = system.type===EXTROP ? 0.54 : system.type===MONSOON ? 0.5 : 0.62;
+            let speed = radius<innerRadius ?
+                maximumWind*pow(radius/innerRadius,0.7) :
+                maximumWind*pow(innerRadius/radius,decayExponent);
+            if(speed<2) continue;
+
+            // In normalized coordinates every cyclone turns counter-clockwise;
+            // EnvField.get reflects vector y for a southern-hemisphere display.
+            result.x += dy/radius*speed;
+            result.y -= dx/radius*speed;
+        }
+        return result;
     }
 
     get(field,x,y,z,noHem){
@@ -706,7 +786,8 @@ class Environment{  // Environmental fields that determine storm strength and st
         if(this.displaying>=this.fieldList.length) this.displaying = -1;
         else{
             this.layerIsOceanic = this.fields[this.fieldList[this.displaying]].oceanic;
-            this.layerIsVector = this.fields[this.fieldList[this.displaying]].isVectorField;
+            let field = this.fields[this.fieldList[this.displaying]];
+            this.layerIsVector = field.isVectorField && !field.vectorColorFill;
         }
         this.displayLayer();
     }

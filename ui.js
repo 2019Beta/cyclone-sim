@@ -324,10 +324,12 @@ UI.init = function(){
                     if(seas) for(let S of seas.forSystems(true)) S.renderWindField();
                 }
             }
-            if(basin.viewingPresent()) for(let S of basin.activeSystems) S.fetchStorm().renderIcon();
-            else{
-                let seas = basin.fetchSeason(viewTick,true);
-                if(seas) for(let S of seas.forSystems(true)) S.renderIcon();
+            if(simSettings.showStormIcons){
+                if(basin.viewingPresent()) for(let S of basin.activeSystems) S.fetchStorm().renderIcon();
+                else{
+                    let seas = basin.fetchSeason(viewTick,true);
+                    if(seas) for(let S of seas.forSystems(true)) S.renderIcon();
+                }
             }
     
             if(!land.drawn){
@@ -370,7 +372,7 @@ UI.init = function(){
             drawBuffer(windFields);
             drawBuffer(tracks);
             drawBuffer(forecastTracks);
-            drawBuffer(stormIcons);
+            if(simSettings.showStormIcons) drawBuffer(stormIcons);
         }
     },function(){
         helpBox.hide();
@@ -418,7 +420,7 @@ UI.init = function(){
                 //     g.sType = "x";
                 // }else return;
                 // basin.spawn(false,g);
-            }else if(basin.viewingPresent()){
+            }else if(simSettings.showStormIcons && basin.viewingPresent()){
                 let mVector = createVector(getMouseX(),getMouseY());
                 for(let i=basin.activeSystems.length-1;i>=0;i--){
                     let s = basin.activeSystems[i].fetchStorm();
@@ -2375,6 +2377,9 @@ function keyPressed(){
                 break;
             case "f":
                 simSettings.setShowWindFields("toggle");
+                break;
+            case "v":
+                simSettings.setShowStormIcons("toggle");
                 break;
             case "t":
                 simSettings.setTrackMode("incmod",4);

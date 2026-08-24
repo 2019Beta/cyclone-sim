@@ -240,11 +240,11 @@ class Settings{
     }
 
     static order(){
-        return ["showWindFields","colorScheme","speedUnit","smoothLandColor","showMagGlass","snowLayers","useShadows","trackMode","showStrength","doAutosave"];    // add new settings to the beginning of this array
+        return ["showStormIcons","showWindFields","colorScheme","speedUnit","smoothLandColor","showMagGlass","snowLayers","useShadows","trackMode","showStrength","doAutosave"];    // add new settings to the beginning of this array
     }
 
     static defaults(){
-        return [true,0,0,true,false,2,false,0,false,true];  // add new defaults to the beginning of this array
+        return [true,true,0,0,true,false,2,false,0,false,true];  // add new defaults to the beginning of this array
     }
 
     save(){
