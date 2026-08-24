@@ -315,12 +315,14 @@ UI.init = function(){
     primaryWrapper = new UI(null,0,0,WIDTH,HEIGHT,function(s){
         if(UI.viewBasin instanceof Basin){
             let basin = UI.viewBasin;
-            if(selectedStorm) selectedStorm.renderWindField();
-            else if(basin.viewingPresent()){
-                for(let S of basin.activeSystems) S.fetchStorm().renderWindField();
-            }else{
-                let seas = basin.fetchSeason(viewTick,true);
-                if(seas) for(let S of seas.forSystems(true)) S.renderWindField();
+            if(simSettings.showWindFields){
+                if(selectedStorm) selectedStorm.renderWindField();
+                else if(basin.viewingPresent()){
+                    for(let S of basin.activeSystems) S.fetchStorm().renderWindField();
+                }else{
+                    let seas = basin.fetchSeason(viewTick,true);
+                    if(seas) for(let S of seas.forSystems(true)) S.renderWindField();
+                }
             }
             if(basin.viewingPresent()) for(let S of basin.activeSystems) S.fetchStorm().renderIcon();
             else{
@@ -849,35 +851,40 @@ UI.init = function(){
         s.button("Intensity Indicator: "+b,true);
     },function(){
         simSettings.setShowStrength("toggle");
-    }).append(false,0,37,300,30,function(s){     // autosaving
+    }).append(false,0,34,300,30,function(s){     // autosaving
         let b = simSettings.doAutosave ? "Enabled" : "Disabled";
         s.button("Autosaving: "+b,true);
     },function(){
         simSettings.setDoAutosave("toggle");
-    }).append(false,0,37,300,30,function(s){     // track mode
+    }).append(false,0,34,300,30,function(s){     // track mode
         let m = ["Active TC Tracks","Full Active Tracks","Season Summary","No Tracks"][simSettings.trackMode];
         s.button("Track Mode: "+m,true);
     },function(){
         simSettings.setTrackMode("incmod",4);
         refreshTracks(true);
-    }).append(false,0,37,300,30,function(s){     // snow
+    }).append(false,0,34,300,30,function(s){     // wind fields
+        let b = simSettings.showWindFields ? "Enabled" : "Disabled";
+        s.button("Wind Fields: "+b,true);
+    },function(){
+        simSettings.setShowWindFields("toggle");
+    }).append(false,0,34,300,30,function(s){     // snow
         let b = simSettings.snowLayers ? (simSettings.snowLayers*10) + " layers" : "Disabled";
         s.button("Snow: "+b,true);
     },function(){
         simSettings.setSnowLayers("incmod",floor(MAX_SNOW_LAYERS/10)+1);
         if(land) land.clearSnow();
-    }).append(false,0,37,300,30,function(s){     // shadows (NOT a shader O~O)
+    }).append(false,0,34,300,30,function(s){     // shadows (NOT a shader O~O)
         let b = simSettings.useShadows ? "Enabled" : "Disabled";
         s.button("Land Shadows: "+b,true);
     },function(){
         simSettings.setUseShadows("toggle");
-    }).append(false,0,37,300,30,function(s){     // magnifying glass
+    }).append(false,0,34,300,30,function(s){     // magnifying glass
         let b = simSettings.showMagGlass ? "Enabled" : "Disabled";
         s.button("Magnifying Glass: "+b,true);
     },function(){
         simSettings.setShowMagGlass("toggle");
         if(UI.viewBasin) UI.viewBasin.env.updateMagGlass();
-    }).append(false,0,37,300,30,function(s){     // smooth land color
+    }).append(false,0,34,300,30,function(s){     // smooth land color
         let b = simSettings.smoothLandColor ? "Enabled" : "Disabled";
         s.button("Smooth Land Color: "+b,true);
     },function(){
@@ -886,12 +893,12 @@ UI.init = function(){
             // landBuffer.clear();
             land.drawn = false;
         }
-    }).append(false,0,37,300,30,function(s){     // speed unit
+    }).append(false,0,34,300,30,function(s){     // speed unit
         let u = ['kts', 'mph', 'km/h'][simSettings.speedUnit];
         s.button("Windspeed Unit: " + u, true);
     },function(){
         simSettings.setSpeedUnit("incmod", 3);
-    }).append(false,0,37,300,30,function(s){     // color scheme
+    }).append(false,0,34,300,30,function(s){     // color scheme
         let n = COLOR_SCHEMES[simSettings.colorScheme].name;
         s.button("Color Scheme: " + n, true);
     },function(){
@@ -2365,6 +2372,9 @@ function keyPressed(){
                 break;
             case "e":
                 if(UI.viewBasin) UI.viewBasin.env.displayNext();
+                break;
+            case "f":
+                simSettings.setShowWindFields("toggle");
                 break;
             case "t":
                 simSettings.setTrackMode("incmod",4);

@@ -1146,6 +1146,17 @@ function seasonalSine(t,off){
     return sin((TAU*(t-YEAR_LENGTH*off))/YEAR_LENGTH);
 }
 
+// Tropical activity with a non-zero off-season floor. This keeps
+// the strong annual cycle while allowing rare tropical development in every
+// month, as occurs in basins such as the western North Pacific.
+function tropicalSeasonalActivity(t,offSeasonFloor){
+    offSeasonFloor = offSeasonFloor===undefined ? 0.24 : offSeasonFloor;
+    let seasonal = max(0,(seasonCurve(t)+1)/2);
+    // Some special modes deliberately exceed the normal seasonal maximum.
+    // Preserve that behaviour and only reshape the quiet half of the curve.
+    return seasonal>=1 ? seasonal : lerp(offSeasonFloor,1,seasonal);
+}
+
 // quick and sloppy copy-paste of spooky code for Halloween update
 // this, the regular season curve, and the wild mode season curve could all be implemented in a more concise way, but that can be done later and this codebase is being retired eventually anyway
 function spookySeasonCurve(t,off){

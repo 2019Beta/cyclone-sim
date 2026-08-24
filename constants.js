@@ -338,6 +338,7 @@ const HELP_TEXT = "Keyboard Controls:\n" +
     "\t\tSPACE - Pause/resume simulation\n" +
     "\t\tA - Step simulation one hour while paused\n" +
     "\t\tE - Cycle through map layers (including isobars)\n" +
+    "\t\tF - Toggle wind field display\n" +
     "\t\tT - Cycle through track display modes\n" +
     "\t\tW - Toggle intensity indicators below storm icons (kts / hPa)\n" +
     "\t\tM - Toggle magnifying glass for map layers\n" +

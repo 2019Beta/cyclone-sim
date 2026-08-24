@@ -186,11 +186,17 @@ SPAWN_RULES.defaults.archetypes = {
 };
 
 SPAWN_RULES.defaults.doSpawn = function(b){
+    // Keep a small background of tropical disturbances throughout the year.
+    // The old formula reached exactly zero at the seasonal minimum, which made
+    // off-season tropical cyclogenesis practically impossible even when a
+    // locally favourable pocket of SST, moisture, and shear existed.
+    let tropicalActivity = tropicalSeasonalActivity(b.tick);
+
     // tropical waves
-    if(random()<0.015*sq((seasonCurve(b.tick)+1)/2)) b.spawnArchetype('tw');
+    if(random()<0.015*sq(tropicalActivity)) b.spawnArchetype('tw');
 
     // broad, loosely organized monsoon depressions
-    if(random()<0.0008*sq((seasonCurve(b.tick)+1)/2)) b.spawnArchetype('n');
+    if(random()<0.0008*sq(tropicalActivity)) b.spawnArchetype('n');
 
     // extratropical cyclones
     if(random()<0.01-0.002*seasonCurve(b.tick)) b.spawnArchetype('ex');
@@ -723,6 +729,7 @@ ENV_DEFS.defaults.SST = {
         if(y<0) return 0;
         let anom = u.field('SSTAnomaly');
         let s = seasonCurve(z);
+        let seasonalActivity = map(s,-1,1,0,1);
         let w = map(cos(map(x,0,WIDTH,0,PI)),-1,1,0,1);
         let h0 = y/HEIGHT;
         let h1 = (sqrt(h0)+h0)/2;
@@ -732,7 +739,9 @@ ENV_DEFS.defaults.SST = {
         let pspt = u.modifiers.peakSeasonPolarTemp;
         let ostt = u.modifiers.offSeasonTropicsTemp;
         let pstt = u.modifiers.peakSeasonTropicsTemp;
-        let t = lerp(map(s,-1,1,ospt,pspt),map(s,-1,1,ostt,pstt),h);
+        let polarTemp = map(s,-1,1,ospt,pspt);
+        let tropicalTemp = lerp(ostt,pstt,seasonalActivity);
+        let t = lerp(polarTemp,tropicalTemp,h);
         return t+anom;
     },
     displayFormat: v=>{
@@ -761,7 +770,10 @@ ENV_DEFS.defaults.SST = {
     modifiers: {
         offSeasonPolarTemp: -3,
         peakSeasonPolarTemp: 10,
-        offSeasonTropicsTemp: 26,
+        // Deep-tropical warm pools remain capable of supporting rare winter
+        // systems; seasonality should mostly control frequency, not impose a
+        // basin-wide thermodynamic shutdown.
+        offSeasonTropicsTemp: 27,
         peakSeasonTropicsTemp: 29
     }
 };
@@ -810,12 +822,15 @@ ENV_DEFS.defaults.moisture = {
     mapFunc: (u,x,y,z)=>{
         let v = u.noise(0);
         let s = seasonCurve(z);
+        let seasonalActivity = map(s,-1,1,0,1);
         let l = land.get(Coordinate.convertFromXY(u.basin.mapType, x, u.basin.hemY(y)));
         let pm = u.modifiers.polarMoisture;
         let tm = u.modifiers.tropicalMoisture;
         let mm = u.modifiers.mountainMoisture;
         let m = map(l,0.5,0.7,map(y,0,HEIGHT,pm,tm),mm,true);
-        m += map(s,-1,1,-0.08,0.08);
+        // Preserve the wet-season maximum while avoiding an unrealistically
+        // dry, uniformly hostile deep tropics at the seasonal minimum.
+        m += lerp(-0.04,0.08,seasonalActivity);
         m += map(v,0,1,-0.3,0.3);
         m = constrain(m,0,1);
         return m;
@@ -1012,6 +1027,50 @@ function extratropicalDevelopmentPotential(jetOffset,moisture,shear,lnd){
     return constrain(jetSupport*(0.42+0.58*baroclinicity)*moistureSupport*surfaceSupport,0,1);
 }
 
+function troughOutflowPotential(sys,jetOffset,moisture,shear,SST,lnd){
+    // A tropical cyclone just equatorward and downstream (east) of a trough can
+    // tap the accelerating upper-level flow as an outflow channel. Diagnose the
+    // geometry from the jet axis rather than treating proximity to the jet alone
+    // as favourable; the latter would incorrectly reward storms beneath the jet
+    // core or behind the trough, where shear is normally destructive.
+    // Exceptional ventilation can support short-lived intensification over
+    // marginal 24-26 C water, though colder water still closes the pathway.
+    if(lnd || jetOffset<15 || jetOffset>155 || SST<23.5) return 0;
+
+    let env = sys.basin.env;
+    let x = sys.pos.x;
+    let y = sys.pos.y;
+    let z = sys.basin.tick;
+    const sampleDistance = 32;
+    let jetWest = env.get("jetstream",x-sampleDistance,y,z);
+    let jetEast = env.get("jetstream",x+sampleDistance,y,z);
+    // Screen-space y increases equatorward. A poleward-sloping jet to the east
+    // therefore has jetWest > jetEast and places the cyclone ahead of the trough.
+    let downstreamSlope = (jetWest-jetEast)/(2*sampleDistance);
+    let troughFront = map(downstreamSlope,0.035,0.38,0,1,true);
+    if(troughFront<=0) return 0;
+
+    // Sample the upper flow around the center. EnvField reuses its vector, so
+    // copy components immediately before requesting the next point.
+    let ulWest = env.get("ULSteering",x-sampleDistance,y,z);
+    let westX = ulWest.x;
+    let ulEast = env.get("ULSteering",x+sampleDistance,y,z);
+    let eastX = ulEast.x;
+    let ulPoleward = env.get("ULSteering",x,y-sampleDistance,z);
+    let polewardY = ulPoleward.y;
+    let ulEquatorward = env.get("ULSteering",x,y+sampleDistance,z);
+    let equatorwardY = ulEquatorward.y;
+    let divergence = ((eastX-westX)+(equatorwardY-polewardY))/(2*sampleDistance);
+
+    let outflowDivergence = map(divergence,-0.008,0.045,0.3,1,true);
+    let distanceWindow = map(jetOffset,15,42,0,1,true)*map(jetOffset,155,82,0,1,true);
+    // Moderate shear can ventilate an established core; excessive shear still
+    // decouples it and shuts the process down.
+    let shearWindow = map(shear,0.45,1.6,0.45,1,true)*map(shear,5.6,3.3,0,1,true);
+    let thermodynamics = map(SST,23.5,29,0.18,1,true)*map(moisture,0.38,0.72,0.25,1,true);
+    return constrain(troughFront*outflowDivergence*distanceWindow*shearWindow*thermodynamics,0,1);
+}
+
 function pressureWindTarget(sys,sizeFactors){
     if(tropOrSub(sys.type) && sys.type!==MONSOON){
         // Invert the Knaff-Zehr (2007) pressure-wind relationship. Size and
@@ -1065,6 +1124,9 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
     let tropicalness = constrain(map(sys.lowerWarmCore,0.5,1,0,1),0,sys.upperWarmCore);
     let nontropicalness = constrain(map(sys.lowerWarmCore,0.75,0,0,1),0,1);
     let extratropicalPotential = extratropicalDevelopmentPotential(jet,moisture,shear,lnd);
+    let troughOutflow = troughOutflowPotential(sys,jet,moisture,shear,SST,lnd)*
+        tropicalness*map(previousOrganization,0.42,0.82,0,1,true);
+    let effectiveTropicalShear = shear*lerp(1,0.55,troughOutflow);
 
     let organizationBeforeEnvironment = sys.organization*100;
     sys.organization *= 100;
@@ -1073,9 +1135,10 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
     // if(lnd) sys.organization -= pow(10,map(lnd,0.5,1,-3,1));
     // if(lnd && sys.organization<70 && moisture>0.3) sys.organization += pow(5,map(moisture,0.3,0.5,-1,1,true))*tropicalness;
     sys.organization -= pow(2,4-((HEIGHT-sys.basin.hemY(sys.pos.y))/(HEIGHT*0.01)));
-    sys.organization -= (pow(map(sys.depth,0,1,1.17,1.31),shear)-1)*map(sys.depth,0,1,4.7,1.2);
-    sys.organization -= map(moisture,0,0.65,3,0,true)*shear;
+    sys.organization -= (pow(map(sys.depth,0,1,1.17,1.31),effectiveTropicalShear)-1)*map(sys.depth,0,1,4.7,1.2);
+    sys.organization -= map(moisture,0,0.65,3,0,true)*effectiveTropicalShear;
     sys.organization += sq(map(moisture,0.6,1,0,1,true))*4;
+    sys.organization += 2.4*troughOutflow;
     sys.organization -= pow(1.3,20-SST)*tropicalness;
     sys.organization = constrain(
         organizationBeforeEnvironment+(sys.organization-organizationBeforeEnvironment)*environmentalSensitivity,
@@ -1086,12 +1149,22 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
 
     updateWindFieldStructure(sys,shear,lnd);
     let sizeFactors = windPressureSizeFactors(sys);
-    let targetPressure = 1010-25*log((lnd||SST<25)?1:map(SST,25,30,1,2))/log(1.17);
+    let normalThermalPotential = lnd ? 0 : map(SST,25,30,0,1,true);
+    // Below 25 C, only an exceptionally efficient trough outflow channel can
+    // unlock part of the otherwise unavailable pressure-fall potential. Keep
+    // this capped so marginal water cannot imitate a deep warm pool.
+    let marginalOutflowPotential = lnd ? 0 : min(
+        0.45,
+        map(SST,23.5,26,0,1,true)*troughOutflow*2.25
+    );
+    let thermalPotential = max(normalThermalPotential,marginalOutflowPotential);
+    let targetPressure = 1010-25*log(1+thermalPotential)/log(1.17);
     targetPressure = lerp(1010,targetPressure,pow(sys.organization,3));
     targetPressure = 1010-(1010-targetPressure)*sizeFactors.pressure;
     let pressureRate = (sys.pressure>targetPressure?0.05:0.08)*tropicalness;
     if(sys.pressure>targetPressure) pressureRate *= circulationIntensificationRate(sys);
     else pressureRate *= environmentalSensitivity;
+    if(sys.pressure>targetPressure) pressureRate *= 1+2.2*troughOutflow;
     if(isMonsoon && sys.pressure>targetPressure) pressureRate *= 0.25;
     sys.pressure = lerp(sys.pressure,targetPressure,pressureRate);
     let pressureNoiseFactor = isMonsoon ? 0.35 : 1;
@@ -1100,6 +1173,8 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
     if(sys.pressure>extratropicalTarget) extratropicalRate *= circulationIntensificationRate(sys);
     else extratropicalRate *= environmentalSensitivity;
     sys.pressure = lerp(sys.pressure,extratropicalTarget,extratropicalRate);
+    if(sys.pressure>targetPressure && sys.organization>0.62)
+        sys.pressure -= 0.32*pow(troughOutflow,1.35);
     if(extratropicalPotential>0.86 && !lnd)
         sys.pressure -= map(extratropicalPotential,0.86,1,0,0.5,true)*nontropicalness;
     sys.pressure += random(-0.65,0.85)*(1-extratropicalPotential)*nontropicalness*pressureNoiseFactor;
@@ -1155,10 +1230,14 @@ STORM_ALGORITHM[SIM_MODE_EXPERIMENTAL].core = function(sys,u){
     let tropicalness = (sys.lowerWarmCore+sys.upperWarmCore)/2;
     let extratropicalness = 1-tropicalness;
     let extratropicalPotential = extratropicalDevelopmentPotential(jet,moisture,shear,lnd);
+    let troughOutflow = troughOutflowPotential(sys,jet,moisture,shear,SST,lnd)*
+        tropicalness*map(previousOrganization,0.42,0.82,0,1,true);
+    let effectiveTropicalShear = shear*lerp(1,0.55,troughOutflow);
 
     if(!lnd)
         sys.organization = lerp(sys.organization,1,sq(tropicalness)*map(SST,21,31,0,0.05,true));
-    sys.organization = lerp(sys.organization,0,pow(3,shear*(1-moisture)*2.3)*0.0005);
+    sys.organization = lerp(sys.organization,0,pow(3,effectiveTropicalShear*(1-moisture)*2.3)*0.0005);
+    sys.organization = lerp(sys.organization,1,0.018*troughOutflow);
     if(lnd>0.7)
         sys.organization = lerp(sys.organization,0,0.03);
     sys.organization = constrain(
@@ -1186,7 +1265,10 @@ STORM_ALGORITHM[SIM_MODE_EXPERIMENTAL].core = function(sys,u){
     let tropicalPressureRate = tropicalness*sys.organization*0.03*(isMonsoon ? 0.25 : 1);
     if(sys.pressure>softCeiling) tropicalPressureRate *= circulationIntensificationRate(sys);
     else tropicalPressureRate *= environmentalSensitivity;
+    if(sys.pressure>softCeiling) tropicalPressureRate *= 1+2.2*troughOutflow;
     sys.pressure = lerp(sys.pressure,softCeiling,tropicalPressureRate);
+    if(sys.pressure>softCeiling && sys.organization>0.62)
+        sys.pressure -= 0.32*pow(troughOutflow,1.35);
     if(sys.pressure<1000)
         sys.pressure = lerp(sys.pressure,1000,min(1,tropicalness*(1-sys.organization)*0.01*environmentalSensitivity));
     sys.pressure = lerp(sys.pressure,1040,map(sys.pos.y,HEIGHT*0.97,HEIGHT,0,0.15,true));
