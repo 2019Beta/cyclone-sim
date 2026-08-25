@@ -109,6 +109,7 @@ class Basin{
     mount(){    // mounts the basin to the viewer
         viewTick = this.tick;
         UI.viewBasin = this;
+        clearObservationBuoy(false);
         selectedStorm = undefined;
         paused = this.tick!==0;
         lastUpdateTimestamp = performance.now();
@@ -150,6 +151,7 @@ class Basin{
                 stormKilled = true;
             }
         }
+        recordObservationBuoy(this.tick);
         metadata.needTrackRefresh |= stormKilled;   // redraw tracks whenever a storm system dies
         if(this.tick % ADVISORY_TICKS === 0){   // redraw map layer and record environmental field state every advisory
             metadata.needEnvLayerRefresh = true;

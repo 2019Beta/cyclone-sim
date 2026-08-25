@@ -1047,6 +1047,23 @@ class StormData{
         return constrain(radius,bounds[0],bounds[1]);
     }
 
+    static minimumCenterSeparation(system0,system1){
+        let type0 = system0 && system0.type!==undefined ? system0.type : EXTROP;
+        let type1 = system1 && system1.type!==undefined ? system1.type : EXTROP;
+        let extropical0 = type0===EXTROP;
+        let extropical1 = type1===EXTROP;
+        let monsoon0 = type0===MONSOON;
+        let monsoon1 = type1===MONSOON;
+
+        // Cold-core lows and monsoon depressions represent broad circulations;
+        // the former 50 px blanket limit allowed two synoptic-scale centers to
+        // be generated almost on top of one another.
+        if(extropical0 && extropical1) return 115;
+        if(extropical0 || extropical1) return 85;
+        if(monsoon0 || monsoon1) return 95;
+        return 50;
+    }
+
     coord(){
         return Coordinate.convertFromXY(this.basin.mapType, this.pos);
     }
@@ -1269,6 +1286,7 @@ class ActiveSystem extends StormData{
             let d = data || {};
             if(d.x instanceof Function || d.y instanceof Function){
                 let x, y, tooClose;
+                let spawnProfile = {type: d.type===undefined ? EXTROP : d.type};
                 let count = 0;
                 do{
                     tooClose = false;
@@ -1281,8 +1299,10 @@ class ActiveSystem extends StormData{
                     else
                         y = d.y || 0;
                     for(let i=0;i<basin.activeSystems.length;i++){
-                        let p = basin.activeSystems[i].pos;
-                        if(sqrt(sq(x-p.x)+sq(y-p.y))<50) tooClose = true;
+                        let other = basin.activeSystems[i];
+                        let p = other.pos;
+                        let minimumSeparation = StormData.minimumCenterSeparation(spawnProfile,other);
+                        if(sqrt(sq(x-p.x)+sq(y-p.y))<minimumSeparation) tooClose = true;
                     }
                     count++;
                 }while(tooClose && count < 1000);

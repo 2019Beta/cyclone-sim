@@ -1,5 +1,10 @@
 About: A p5.js tropical cyclone simulation game
 
+v0.4.31 (2026-08-25):
+    + Added a placeable observation buoy with pressure and instantaneous wind-speed charts
+        > Press B to clear the existing buoy, then click the map to place a new one
+        > Charts appear in the upper-right in the Northern Hemisphere and lower-right in the Southern Hemisphere
+    * Prevented extratropical cyclones from spawning or persisting as unrealistically tight double centers
 v0.4.30 (2026-08-24):
     + Added a color-filled surface wind field map showing the background flow and cyclone circulations
         > Press E to cycle to the wind field layer

@@ -624,6 +624,7 @@ ENV_DEFS.defaults.shear = {
         let ul = u.field('ULSteering');
         u.vec.set(ul);
         u.vec.sub(ll);
+        u.vec.mult(u.modifiers.strength);
         return u.vec;
     },
     displayFormat: v=>{
@@ -635,6 +636,9 @@ ENV_DEFS.defaults.shear = {
     vector: true,
     noVectorFlip: true,
     magMap: [0,8,0,25],
+    modifiers: {
+        strength: 1
+    },
     hueMap: (v)=>{
         colorMode(HSB);
         let strong = color(0,100,80);
@@ -652,7 +656,11 @@ ENV_DEFS.defaults.shear = {
 ENV_DEFS[SIM_MODE_NORMAL].shear = {};
 ENV_DEFS[SIM_MODE_HYPER].shear = {};
 ENV_DEFS[SIM_MODE_WILD].shear = {};
-ENV_DEFS[SIM_MODE_MEGABLOBS].shear = {};
+ENV_DEFS[SIM_MODE_MEGABLOBS].shear = {
+    modifiers: {
+        strength: 0.75
+    }
+};
 ENV_DEFS[SIM_MODE_EXPERIMENTAL].shear = {};
 ENV_DEFS[SIM_MODE_SPOOKY].shear = {};
 
@@ -797,10 +805,10 @@ ENV_DEFS[SIM_MODE_WILD].SST = {
 };
 ENV_DEFS[SIM_MODE_MEGABLOBS].SST = {
     modifiers: {
-        offSeasonPolarTemp: -5,
-        peakSeasonPolarTemp: 20,
-        offSeasonTropicsTemp: 23,
-        peakSeasonTropicsTemp: 28.5
+        offSeasonPolarTemp: -3,
+        peakSeasonPolarTemp: 22,
+        offSeasonTropicsTemp: 25,
+        peakSeasonTropicsTemp: 30.5
     }
 };
 ENV_DEFS[SIM_MODE_EXPERIMENTAL].SST = {
@@ -982,7 +990,12 @@ STORM_ALGORITHM.defaults.interaction = function(sys0, sys1){
         v.setMag(map(m,r,0,0,map(constrain(sys1.pressure,990,1030),1030,990,0.2,2.2)));
         interactionData.fuji = v;
         interactionData.shear = map(m,r,0,0,map(sys1.pressure,1030,900,0,6));
-        if((m < map(sys0.pressure,1030,1000,r/5,r/15) || m<5) && sys0.pressure > sys1.pressure)
+        // Two broad cold-core lows cannot retain separate closed centers at the
+        // compact spacing tolerated by tropical vortices. Coalesce the weaker
+        // center before the pair settles into an unrealistically tight orbit.
+        let broadCenterMerge = sys0.type===EXTROP && sys1.type===EXTROP ?
+            StormData.minimumCenterSeparation(sys0,sys1) : 0;
+        if((m < broadCenterMerge || m < map(sys0.pressure,1030,1000,r/5,r/15) || m<5) && sys0.pressure > sys1.pressure)
             interactionData.kill = 1;
     }
 
@@ -1195,7 +1208,12 @@ STORM_ALGORITHM.defaults.core = function(sys,u){
 
     updateWindFieldStructure(sys,shear,lnd);
     let sizeFactors = windPressureSizeFactors(sys);
-    let normalThermalPotential = lnd ? 0 : map(SST,25,30,0,1,true);
+    // Preserve the normal 25-30 C intensity curve, then let exceptionally warm
+    // water keep adding potential without another upper clamp. The logarithmic
+    // pressure response below supplies diminishing returns while still allowing
+    // arbitrarily high SSTs to produce arbitrarily intense storms.
+    let normalThermalPotential = lnd ? 0 :
+        map(SST,25,30,0,1,true)+max(0,map(SST,30,36,0,0.55));
     // Below 25 C, only an exceptionally efficient trough outflow channel can
     // unlock part of the otherwise unavailable pressure-fall potential. Keep
     // this capped so marginal water cannot imitate a deep warm pool.

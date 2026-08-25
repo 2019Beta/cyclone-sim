@@ -295,6 +295,132 @@ UI.click = function(){
 UI.viewBasin = undefined;
 // UI.viewTick = undefined;
 
+// Buoys are viewer-only state. B removes the old buoy and arms the next map click.
+let observationBuoy;
+let buoyPlacementArmed = false;
+const BUOY_HISTORY_LENGTH = 24 * 7;
+
+function clearObservationBuoy(armPlacement){
+    observationBuoy = undefined;
+    buoyPlacementArmed = !!armPlacement;
+}
+
+function placeObservationBuoy(x,y){
+    if(!(UI.viewBasin instanceof Basin)) return;
+    observationBuoy = {x, y, history: []};
+    buoyPlacementArmed = false;
+    recordObservationBuoy(viewTick);
+}
+
+function recordObservationBuoy(tick){
+    let basin = UI.viewBasin;
+    if(!observationBuoy || !(basin instanceof Basin)) return;
+    let history = observationBuoy.history;
+    if(history.length && history[history.length-1].tick===tick) return;
+    let pressure = basin.env.get('pressure',observationBuoy.x,observationBuoy.y,tick);
+    let wind = basin.env.get('surfaceWind',observationBuoy.x,observationBuoy.y,tick);
+    if(pressure===null || wind===null || !Number.isFinite(pressure) || !wind || !Number.isFinite(wind.mag())) return;
+    history.push({tick, pressure, wind: wind.mag()});
+    if(history.length>BUOY_HISTORY_LENGTH) history.splice(0,history.length-BUOY_HISTORY_LENGTH);
+}
+
+function renderObservationBuoy(){
+    if(!(UI.viewBasin instanceof Basin)) return;
+    if(buoyPlacementArmed){
+        push();
+        stroke(COLORS.UI.text);
+        line(getMouseX()-8,getMouseY(),getMouseX()+8,getMouseY());
+        line(getMouseX(),getMouseY()-8,getMouseX(),getMouseY()+8);
+        noStroke();
+        fill(COLORS.UI.box);
+        rect(WIDTH/2-92,34,184,24);
+        fill(COLORS.UI.text);
+        textAlign(CENTER,CENTER);
+        textSize(13);
+        text('Click the map to place buoy',WIDTH/2,46);
+        pop();
+        return;
+    }
+    if(!observationBuoy) return;
+
+    push();
+    translate(observationBuoy.x,observationBuoy.y);
+    stroke(COLORS.UI.text);
+    strokeWeight(2);
+    fill(255,190,35);
+    ellipse(0,-5,10,10);
+    line(0,0,0,9);
+    line(-7,9,7,9);
+    line(-7,9,-3,4);
+    line(7,9,3,4);
+    pop();
+
+    let history = observationBuoy.history;
+    if(!history.length) return;
+    let latest = history[history.length-1];
+    const panelW = 270;
+    const panelH = 174;
+    const panelX = WIDTH-panelW-6;
+    const panelY = UI.viewBasin.SHem ? HEIGHT-30-panelH-6 : 36;
+    const left = panelX+39;
+    const right = panelX+panelW-10;
+
+    push();
+    noStroke();
+    fill(COLORS.UI.box);
+    rect(panelX,panelY,panelW,panelH);
+    fill(COLORS.UI.text);
+    textAlign(LEFT,TOP);
+    textSize(13);
+    text('Buoy  Pressure '+(round(latest.pressure*10)/10)+' hPa',panelX+8,panelY+6);
+    text('Instant wind '+displayWindspeed(round(latest.wind),1),panelX+8,panelY+87);
+
+    let drawPlot = (top,bottom,field,lineColor,formatValue)=>{
+        let values = history.map(v=>v[field]);
+        let minimum = Math.min(...values);
+        let maximum = Math.max(...values);
+        if(field==='pressure'){
+            minimum = floor((minimum-1)/2)*2;
+            maximum = ceil((maximum+1)/2)*2;
+        }else{
+            minimum = 0;
+            maximum = max(10,ceil(maximum/10)*10);
+        }
+        if(maximum===minimum) maximum = minimum+1;
+        stroke(COLORS.UI.text);
+        strokeWeight(1);
+        line(left,top,left,bottom);
+        line(left,bottom,right,bottom);
+        fill(COLORS.UI.text);
+        noStroke();
+        textAlign(RIGHT,CENTER);
+        textSize(10);
+        text(formatValue(maximum),left-4,top);
+        text(formatValue(minimum),left-4,bottom);
+        stroke(lineColor);
+        strokeWeight(2);
+        noFill();
+        beginShape();
+        for(let i=0;i<history.length;i++){
+            let x = history.length===1 ? right : map(i,0,history.length-1,left,right);
+            let y = map(history[i][field],minimum,maximum,bottom,top);
+            vertex(x,y);
+        }
+        endShape();
+        let lastY = map(latest[field],minimum,maximum,bottom,top);
+        strokeWeight(5);
+        point(right,lastY);
+    };
+    drawPlot(panelY+25,panelY+76,'pressure',color(55,105,190),v=>round(v));
+    drawPlot(panelY+106,panelY+158,'wind',color(210,75,55),v=>round([v,ktsToMph(v),ktsToKmh(v)][simSettings.speedUnit]));
+    noStroke();
+    fill(COLORS.UI.text);
+    textAlign(RIGHT,BOTTOM);
+    textSize(9);
+    text(history.length+' h',right,panelY+panelH-3);
+    pop();
+}
+
 // Definitions for all UI elements
 
 UI.init = function(){
@@ -380,6 +506,11 @@ UI.init = function(){
         seedBox.hide();
         if(UI.viewBasin instanceof Basin){
             let basin = UI.viewBasin;
+            if(buoyPlacementArmed){
+                if(getMouseY()>30 && getMouseY()<HEIGHT-30)
+                    placeObservationBuoy(getMouseX(),getMouseY());
+                return;
+            }
             if(basin.godMode && keyIsPressed && basin.viewingPresent()) {
                 if(['l','x','n','N','d','D','s','S','1','2','3','4','5','6','7','8','9','0','y'].includes(key))
                     basin.spawnArchetype(key.toLowerCase()==='n' ? 'n' : key,getMouseX(),getMouseY());
@@ -2280,6 +2411,11 @@ UI.init = function(){
     },function(){
         helpBox.hide();
     });
+
+    // Added last so the measurement panel stays above the rest of the map UI.
+    primaryWrapper.append(false,0,0,WIDTH,HEIGHT,function(){
+        if(!helpBox.showing) renderObservationBuoy();
+    });
 };
 
 function mouseInCanvas(){
@@ -2368,6 +2504,9 @@ function keyPressed(){
                 break;
             case "a":
                 if(UI.viewBasin && paused && primaryWrapper.showing) UI.viewBasin.advanceSim();
+                break;
+            case "b":
+                if(UI.viewBasin && primaryWrapper.showing) clearObservationBuoy(true);
                 break;
             case "w":
                 simSettings.setShowStrength("toggle");
