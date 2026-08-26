@@ -512,7 +512,9 @@ UI.init = function(){
                 return;
             }
             if(basin.godMode && keyIsPressed && basin.viewingPresent()) {
-                if(['l','x','n','N','d','D','s','S','1','2','3','4','5','6','7','8','9','0','y'].includes(key))
+                if(key.toLowerCase()==='u')
+                    basin.spawnFujiwharaPair(getMouseX(),getMouseY());
+                else if(['l','x','n','N','d','D','s','S','1','2','3','4','5','6','7','8','9','0','y'].includes(key))
                     basin.spawnArchetype(key.toLowerCase()==='n' ? 'n' : key,getMouseX(),getMouseY());
                 // let g = {x: getMouseX(), y: getMouseY()};
                 // if(key === "l" || key === "L"){

@@ -354,6 +354,7 @@ const HELP_TEXT = "Keyboard Controls:\n" +
     "\t\t\t\tN - Monsoon Depression (MD)\n" +
     "\t\t\t\tD - Tropical Depression\n" +
     "\t\t\t\tS - Tropical Storm\n" +
+    "\t\t\t\tU - Fujiwhara pair (two Category 2 cyclones)\n" +
     "\t\t\t\t[number key 1-9] - Category [1-9]* Tropical Cyclone\n" +
     '\t\t\t\t0 - Category 10* Tropical Cyclone\n' +
     '\t\t\t\tY - Hyperclone*\n' +

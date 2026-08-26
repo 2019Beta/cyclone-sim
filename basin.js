@@ -281,6 +281,16 @@ class Basin{
         this.spawn(data);
     }
 
+    spawnFujiwharaPair(x,y){
+        // A repeatable God Mode demonstration: two equally intense tropical
+        // cyclones start well inside their mutual interaction envelope.
+        let halfSeparation = 50;
+        let centerX = constrain(x,halfSeparation+DIAMETER,WIDTH-halfSeparation-DIAMETER);
+        let centerY = constrain(y,DIAMETER,HEIGHT-DIAMETER);
+        this.spawnArchetype('2',centerX-halfSeparation,centerY);
+        this.spawnArchetype('2',centerX+halfSeparation,centerY);
+    }
+
     addSubBasin(id,...args){
         id = parseInt(id);
         this.subBasins[id] = new SubBasin(this,id,...args);

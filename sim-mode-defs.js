@@ -976,26 +976,80 @@ STORM_ALGORITHM.defaults.interactionInit = {
     kill: false
 };
 
+function fujiwharaInteractionRange(sys0,sys1){
+    // On the regional maps, the 120 px base onset is roughly the commonly
+    // cited 750 n mi (about 1400 km) interaction distance. Larger circulations
+    // begin influencing one another sooner than compact storms.
+    let size0 = Number.isFinite(sys0.circulationSize) ? sys0.circulationSize : 3;
+    let size1 = Number.isFinite(sys1.circulationSize) ? sys1.circulationSize : 3;
+    let range = map((size0+size1)/2,1,5,120,180,true);
+    if(sys0.type===MONSOON || sys1.type===MONSOON) range *= 1.12;
+    if(sys0.type===EXTROP || sys1.type===EXTROP) range *= 1.08;
+    return range;
+}
+
+function fujiwharaVortexStrength(sys){
+    // Point-vortex dynamics make each center respond to the circulation of
+    // the *other* vortex. Blend pressure and wind so unusual broad or compact
+    // storms still produce a sensible translation speed in pixels per hour.
+    let pressure = Number.isFinite(sys.pressure) ? sys.pressure : 1010;
+    let wind = Number.isFinite(sys.windSpeed) ? sys.windSpeed : 25;
+    let pressureStrength = map(constrain(pressure,900,1015),1015,900,0.55,3);
+    let windStrength = map(constrain(wind,20,160),20,160,0.55,3);
+    return (pressureStrength+windStrength)/2;
+}
+
 STORM_ALGORITHM.defaults.interaction = function(sys0, sys1){
     let interactionData = {};
 
-    let v = createVector();
-    v.set(sys0.pos);
-    v.sub(sys1.pos);
-    let m = v.mag();
-    let r = map(sys1.lowerWarmCore,0,1,150,50);
-    if(sys1.type===MONSOON) r *= 1.45;
-    if(m<r && m>0){
-        v.rotate(sys0.basin.hem(-TAU/4+((3/m)*TAU/16)));
-        v.setMag(map(m,r,0,0,map(constrain(sys1.pressure,990,1030),1030,990,0.2,2.2)));
+    let offset = p5.Vector.sub(sys0.pos,sys1.pos);
+    let distance = offset.mag();
+    let interactionRange = fujiwharaInteractionRange(sys0,sys1);
+    if(distance<interactionRange && distance>0){
+        let proximity = 1-distance/interactionRange;
+
+        // A northern-hemisphere pair turns counter-clockwise geographically.
+        // Screen-space y points south, so this is a clockwise vector rotation;
+        // hem() reverses it in the Southern Hemisphere.
+        let selfStrength = fujiwharaVortexStrength(sys0);
+        let otherStrength = fujiwharaVortexStrength(sys1);
+        let tangentialSpeed = otherStrength*pow(proximity,0.35);
+        let v = offset.copy();
+        v.rotate(sys0.basin.hem(-TAU/4));
+        v.setMag(tangentialSpeed);
+
+        // Explicit one-hour position steps otherwise gain a little radius from
+        // every tangent move. Correct that integration drift about the pair's
+        // intensity-weighted centroid; this is not an extra physical inflow.
+        let centroidRadius = distance*otherStrength/(selfStrength+otherStrength);
+        let inwardSpeed = min(0.18,sq(tangentialSpeed)/(2*max(1,centroidRadius)));
+
+        // Very close vortices also drift towards their shared centroid, which
+        // permits a realistic capture/merger instead of an indefinitely tight
+        // numerical orbit.
+        let captureRadius = interactionRange*0.58;
+        if(distance<captureRadius)
+            inwardSpeed += 0.22*sq(1-distance/captureRadius);
+        if(inwardSpeed>0){
+            let inward = offset.copy().mult(-1);
+            inward.setMag(inwardSpeed);
+            v.add(inward);
+        }
+
         interactionData.fuji = v;
-        interactionData.shear = map(m,r,0,0,map(sys1.pressure,1030,900,0,6));
+        interactionData.shear = 6*sq(proximity)*map(
+            constrain(sys1.windSpeed,20,160),20,160,0.35,1
+        );
         // Two broad cold-core lows cannot retain separate closed centers at the
         // compact spacing tolerated by tropical vortices. Coalesce the weaker
         // center before the pair settles into an unrealistically tight orbit.
         let broadCenterMerge = sys0.type===EXTROP && sys1.type===EXTROP ?
             StormData.minimumCenterSeparation(sys0,sys1) : 0;
-        if((m < broadCenterMerge || m < map(sys0.pressure,1030,1000,r/5,r/15) || m<5) && sys0.pressure > sys1.pressure)
+        let vortexMerge = map(
+            constrain(sys0.pressure,1000,1030),1030,1000,
+            interactionRange/5,interactionRange/15
+        );
+        if((distance < broadCenterMerge || distance < vortexMerge || distance<5) && sys0.pressure > sys1.pressure)
             interactionData.kill = 1;
     }
 
