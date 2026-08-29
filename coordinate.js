@@ -55,10 +55,23 @@ class Coordinate{
             ({west, east, north, south} = MAP_TYPES[6]); // default to Atlantic
         let x, y;
         if(east < west){
-            if(long > west)
-                x = map(long, west, east + 360, 0, WIDTH, true);
-            else
-                x = map(long, west - 360, east, 0, WIDTH, true);
+            east += 360;
+
+            // Wrapped-map longitudes are normalized to [-180, 180] before
+            // being saved. Choose the equivalent longitude closest to the
+            // map interval so Float32 rounding at the west edge cannot send
+            // a point hundreds of degrees off the map.
+            let distanceToMap = value=>value < west ? west-value : value > east ? value-east : 0;
+            let mapLong = long;
+            let mapLongDistance = distanceToMap(mapLong);
+            for(let candidate of [long-360,long+360]){
+                let candidateDistance = distanceToMap(candidate);
+                if(candidateDistance < mapLongDistance){
+                    mapLong = candidate;
+                    mapLongDistance = candidateDistance;
+                }
+            }
+            x = map(mapLong, west, east, 0, WIDTH, true);
         }else
             x = map(long, west, east, 0, WIDTH, true);
         y = map(lat, north, south, 0, HEIGHT, true);
