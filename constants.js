@@ -1,5 +1,5 @@
 const TITLE = "Cyclone Simulator";
-const VERSION_NUMBER = "0.4.31";
+const VERSION_NUMBER = "0.4.32";
 
 const SAVE_FORMAT = 7;  // Format #7 in use starting in v0.4
 const EARLIEST_COMPATIBLE_FORMAT = 0;
@@ -284,6 +284,17 @@ const NC_OFFSET_RANDOM_FACTOR = 4096;
 const ACE_WIND_THRESHOLD = 34;
 const ACE_DIVISOR = 10000;
 const DAMAGE_DIVISOR = 1000;
+// Wind-circle impact levels used by the damage/death model.  The existing
+// exponential potentials describe the storm's overall intensity; these local
+// multipliers make the 34/50/64 kt bands progressively more damaging.
+const WIND_IMPACT_LEVELS = Object.freeze([
+    {threshold:34, damageMultiplier:0.05, deathMultiplier:0.01},
+    {threshold:50, damageMultiplier:0.15, deathMultiplier:0.04},
+    {threshold:64, damageMultiplier:0.35, deathMultiplier:0.12}
+]);
+const WIND_IMPACT_REFERENCE_RADIUS = 100; // nautical miles; keeps exposure on the old scale
+const WIND_IMPACT_REFERENCE_AREA = Math.PI * Math.pow(WIND_IMPACT_REFERENCE_RADIUS,2);
+const WIND_IMPACT_RADIAL_SAMPLES = 3;
 const ENVDATA_NOT_FOUND_ERROR = "envdata-not-found";
 const LOADED_SEASON_REQUIRED_ERROR = "loaded-season-required";
 const LOAD_MENU_BUTTONS_PER_PAGE = 6;

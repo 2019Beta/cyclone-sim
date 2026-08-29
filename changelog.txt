@@ -1,5 +1,10 @@
 About: A p5.js tropical cyclone simulation game
 
+v0.4.32 (2026-08-29):
+    + Damage and death statistics now include land covered by a tropical cyclone's wind field
+        > 34 kt, 50 kt, and 64 kt bands use progressively higher local impact rates
+        > Outer wind-circle impacts are intentionally much lower than the center-point landfall baseline
+
 v0.4.31 (2026-08-25):
     + Added a placeable observation buoy with pressure and instantaneous wind-speed charts
         > Press B to clear the existing buoy, then click the map to place a new one

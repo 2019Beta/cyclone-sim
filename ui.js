@@ -265,6 +265,7 @@ UI.setInputCursorPosition = function(i, isSelecting){
 };
 
 UI.updateMouseOver = function(){
+    updateObservationBuoyCloseButton();
     for(let i=UI.elements.length-1;i>=0;i--){
         let u = UI.elements[i];
         let mo = u.checkMouseOver();
@@ -298,11 +299,31 @@ UI.viewBasin = undefined;
 // Buoys are viewer-only state. B removes the old buoy and arms the next map click.
 let observationBuoy;
 let buoyPlacementArmed = false;
+let observationBuoyCloseButton;
 const BUOY_HISTORY_LENGTH = 24 * 7;
+const OBSERVATION_BUOY_PANEL_WIDTH = 270;
+const OBSERVATION_BUOY_PANEL_HEIGHT = 174;
+
+function observationBuoyPanelY(){
+    return UI.viewBasin.SHem ? HEIGHT-30-OBSERVATION_BUOY_PANEL_HEIGHT-6 : 36;
+}
+
+function updateObservationBuoyCloseButton(){
+    if(!observationBuoyCloseButton) return;
+    if(!(UI.viewBasin instanceof Basin) || !observationBuoy || !observationBuoy.history.length || (typeof helpBox !== 'undefined' && helpBox.showing)){
+        observationBuoyCloseButton.hide();
+        return;
+    }
+    let panelX = WIDTH-OBSERVATION_BUOY_PANEL_WIDTH-6;
+    observationBuoyCloseButton.relX = panelX+OBSERVATION_BUOY_PANEL_WIDTH-29;
+    observationBuoyCloseButton.relY = observationBuoyPanelY()+3;
+    observationBuoyCloseButton.show();
+}
 
 function clearObservationBuoy(armPlacement){
     observationBuoy = undefined;
     buoyPlacementArmed = !!armPlacement;
+    updateObservationBuoyCloseButton();
 }
 
 function placeObservationBuoy(x,y){
@@ -310,6 +331,7 @@ function placeObservationBuoy(x,y){
     observationBuoy = {x, y, history: []};
     buoyPlacementArmed = false;
     recordObservationBuoy(viewTick);
+    updateObservationBuoyCloseButton();
 }
 
 function recordObservationBuoy(tick){
@@ -358,10 +380,10 @@ function renderObservationBuoy(){
     let history = observationBuoy.history;
     if(!history.length) return;
     let latest = history[history.length-1];
-    const panelW = 270;
-    const panelH = 174;
+    const panelW = OBSERVATION_BUOY_PANEL_WIDTH;
+    const panelH = OBSERVATION_BUOY_PANEL_HEIGHT;
     const panelX = WIDTH-panelW-6;
-    const panelY = UI.viewBasin.SHem ? HEIGHT-30-panelH-6 : 36;
+    const panelY = observationBuoyPanelY();
     const left = panelX+39;
     const right = panelX+panelW-10;
 
@@ -2415,9 +2437,15 @@ UI.init = function(){
     });
 
     // Added last so the measurement panel stays above the rest of the map UI.
-    primaryWrapper.append(false,0,0,WIDTH,HEIGHT,function(){
+    let observationBuoyPanel = primaryWrapper.append(false,0,0,WIDTH,HEIGHT,function(){
         if(!helpBox.showing) renderObservationBuoy();
     });
+
+    observationBuoyCloseButton = observationBuoyPanel.append(false,0,0,24,24,function(s){
+        s.button('X',false,22);
+    },function(){
+        clearObservationBuoy(false);
+    },false);
 };
 
 function mouseInCanvas(){
