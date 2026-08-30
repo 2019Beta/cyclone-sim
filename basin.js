@@ -151,6 +151,8 @@ class Basin{
                 stormKilled = true;
             }
         }
+        if(this.tick % ADVISORY_TICKS === 0)
+            ActiveSystem.updateTrackForecasts(this);
         recordObservationBuoy(this.tick);
         metadata.needTrackRefresh |= stormKilled;   // redraw tracks whenever a storm system dies
         if(this.tick % ADVISORY_TICKS === 0){   // redraw map layer and record environmental field state every advisory

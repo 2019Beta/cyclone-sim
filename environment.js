@@ -16,7 +16,11 @@ class NoiseChannel{
         xo = xo!==undefined ? xo : this.xOff;
         yo = yo!==undefined ? yo : this.yOff;
         zo = zo!==undefined ? zo : this.zOff;
-        noiseDetail(this.octaves,this.falloff);
+        if(NoiseChannel.lastOctaves!==this.octaves || NoiseChannel.lastFalloff!==this.falloff){
+            noiseDetail(this.octaves,this.falloff);
+            NoiseChannel.lastOctaves = this.octaves;
+            NoiseChannel.lastFalloff = this.falloff;
+        }
         return noise(x/this.zoom+xo,y/this.zoom+yo,z/this.zZoom+zo);
     }
 }
@@ -37,6 +41,8 @@ class EnvNoiseChannel extends NoiseChannel{
     }
 
     get(x,y,z){
+        if(z>=this.basin.tick)
+            return super.get(x,y,z,this.xOff,this.yOff,this.zOff);
         let o = this.fetchOffsets(z);
         if(!o) throw ENVDATA_NOT_FOUND_ERROR;
         let {xo, yo, zo} = o;
@@ -204,47 +210,55 @@ class EnvField{
                 }
             }
         }
+        let field = this;
+        this.utility = {
+            noise(num,x1,y1,z1){
+                if(x1===undefined) x1 = field.sampleX;
+                if(y1===undefined) y1 = field.sampleY;
+                if(z1===undefined) z1 = field.sampleZ;
+                return field.noise[num].get(x1,y1,z1);
+            },
+            basin:this.basin,
+            field(name,x1,y1,z1){
+                if(x1===undefined) x1 = field.sampleX;
+                if(y1===undefined) y1 = field.sampleY;
+                if(z1===undefined) z1 = field.sampleZ;
+                let dependency = field.basin.env.fields[name];
+                if(dependency.accurateAfter>field.accurateAfter)
+                    field.accurateAfter = dependency.accurateAfter;
+                return field.basin.env.get(name,x1,y1,z1,true);
+            },
+            yearfrac:z=>(z%YEAR_LENGTH)/YEAR_LENGTH,
+            piecewise(s,arr){
+                let month = s*12;
+                let previous = [arr[arr.length-1][0]-12,arr[arr.length-1][1]];
+                for(let point of arr){
+                    if(month<point[0]) return map(month,previous[0],point[0],previous[1],point[1]);
+                    previous = point;
+                }
+                return map(month,previous[0],arr[0][0]+12,previous[1],arr[0][1]);
+            },
+            vec:this.vec,
+            modifiers:this.modifiers || {}
+        };
+        Object.defineProperty(this.utility,'coord',{get(){
+            if(!field.sampleCoord)
+                field.sampleCoord = Coordinate.convertFromXY(field.basin.mapType,field.sampleOriginalX,field.sampleOriginalY);
+            return field.sampleCoord;
+        }});
     }
 
     get(x,y,z,noHem){
         try{
-            let longlat = Coordinate.convertFromXY(this.basin.mapType, x, y);
+            this.sampleOriginalX = x;
+            this.sampleOriginalY = y;
+            this.sampleCoord = undefined;
             if(!noHem) y = this.basin.hemY(y);
+            this.sampleX = x;
+            this.sampleY = y;
+            this.sampleZ = z;
             if(this.mapFunc){
-                let u = {}; // utility argument
-                u.noise = (num,x1,y1,z1)=>{     // get noise channel value (coordinates optional as they default to the main "get" coordinates)
-                    if(x1===undefined) x1 = x;
-                    if(y1===undefined) y1 = y;
-                    if(z1===undefined) z1 = z;
-                    return this.noise[num].get(x1,y1,z1);
-                };
-                u.basin = this.basin;
-                u.field = (name,x1,y1,z1)=>{    // get value of another env field (coordinates optional)
-                    if(x1===undefined) x1 = x;
-                    if(y1===undefined) y1 = y;
-                    if(z1===undefined) z1 = z;
-                    if(this.basin.env.fields[name].accurateAfter>this.accurateAfter) this.accurateAfter = this.basin.env.fields[name].accurateAfter;
-                    return this.basin.env.get(name,x1,y1,z1,true);
-                };
-                u.yearfrac = z=>(z%YEAR_LENGTH)/YEAR_LENGTH;    // fraction of the way through the year for a tick (SHem year begins July 1 so this value is climatologically the same for both hemispheres)
-                u.piecewise = (s,arr)=>{
-                    // constructs and evaluates an interpolation function defined piecewise with linear segments
-                    // s is a year fraction in the range 0 to 1 (the argument to the interpolation function)
-                    // arr is an array of "points" expressed as length-2 arrays
-                    // first value of each "point" ("x") represents a number of months through the year (range 0 to 12)
-                    // second value of each "point" ("y") represents the value to interpolate from
-                    let m = s*12;
-                    let x = [arr[arr.length-1][0]-12,arr[arr.length-1][1]];
-                    for(let q of arr){
-                        if(m<q[0]) return map(m,x[0],q[0],x[1],q[1]);
-                        x = q;
-                    }
-                    return map(m,x[0],arr[0][0]+12,x[1],arr[0][1]);
-                };
-                u.coord = longlat;
-                u.vec = this.vec;
-                u.modifiers = this.modifiers || {};
-                let res = this.mapFunc(u,x,y,z);
+                let res = this.mapFunc(this.utility,x,y,z);
                 if(this.isVectorField && !this.noVectorFlip) res.y = this.basin.hem(res.y);
                 return res;
             }
@@ -595,6 +609,8 @@ class Environment{  // Environmental fields that determine storm strength and st
         this.layerIsVector = false;
         this.pressureCacheKey = undefined;
         this.pressureSystems = [];
+        this.queryCacheDepth = 0;
+        this.queryCache = undefined;
     }
 
     addField(name,...fieldArgs){
@@ -750,12 +766,37 @@ class Environment{  // Environmental fields that determine storm strength and st
         return result;
     }
 
+    beginQueryCache(){
+        if(this.queryCacheDepth++===0) this.queryCache = new Map();
+    }
+
+    endQueryCache(){
+        if(this.queryCacheDepth>0 && --this.queryCacheDepth===0){
+            this.queryCache.clear();
+            this.queryCache = undefined;
+        }
+    }
+
     get(field,x,y,z,noHem){
         if(!this.fields[field]){
             console.error('Field "' + field + '" does not exist in simulation mode ' + this.basin.actMode);
             return 0;
         }
-        return this.fields[field].get(x,y,z,noHem);
+        if(!this.queryCache) return this.fields[field].get(x,y,z,noHem);
+
+        let fieldCache = this.queryCache.get(field);
+        if(!fieldCache){
+            fieldCache = new Map();
+            this.queryCache.set(field,fieldCache);
+        }
+        let key = x+'|'+y+'|'+z+'|'+(noHem ? 1 : 0);
+        if(fieldCache.has(key)){
+            let cached = fieldCache.get(key);
+            return cached instanceof p5.Vector ? cached.copy() : cached;
+        }
+        let value = this.fields[field].get(x,y,z,noHem);
+        fieldCache.set(key,value instanceof p5.Vector ? value.copy() : value);
+        return value;
     }
 
     getDisplayName(field){
@@ -898,6 +939,53 @@ class Land{
                     return hVal / 255;
             }else return 0;
         }
+    }
+
+    _pixelIndexAtXY(x,y){
+        if(this.earth){
+            let img = this.wholeEarthMap;
+            let east = this.eastBound;
+            if(east<this.westBound) east += 360;
+            let longitude = map(constrain(x,0,WIDTH),0,WIDTH,this.westBound,east);
+            longitude = ((longitude+180)%360+360)%360-180;
+            let latitude = map(constrain(y,0,HEIGHT),0,HEIGHT,this.northBound,this.southBound);
+            let pixelX = floor(map(longitude,-180,180,0,img.width));
+            let pixelY = floor(map(latitude,90,-90,0,img.height-1));
+            return 4*(pixelY*img.width*sq(img._pixelDensity)+pixelX*img._pixelDensity);
+        }
+
+        let img = this.map;
+        let pixelX = floor(constrain(x,0,WIDTH)*this.mapDefinition);
+        let pixelY = floor(constrain(y,0,HEIGHT)*this.mapDefinition);
+        if(!img || pixelX<0 || pixelX>=img.width || pixelY<0 || pixelY>=img.height) return -1;
+        let density = img._pixelDensity;
+        return 4*(pixelY*img.width*density*density+pixelX*density);
+    }
+
+    getAtXY(x,y){
+        let index = this._pixelIndexAtXY(x,y);
+        if(index<0) return 0;
+        let img = this.earth ? this.wholeEarthMap : this.map;
+        let heightValue = img.pixels[index];
+        if(!img.pixels[index+1]) return 0;
+        return this.earth ?
+            map(sqrt(map(heightValue,12,150,0,1,true)),0,1,0.501,1) :
+            heightValue/255;
+    }
+
+    getSubBasinAtXY(x,y){
+        let index = this._pixelIndexAtXY(x,y);
+        if(index<0) return 0;
+        let img = this.earth ? this.wholeEarthMap : this.map;
+        return img.pixels[index+2];
+    }
+
+    populationAtXY(x,y){
+        if(x<0 || x>WIDTH || y<0 || y>HEIGHT) return 0;
+        let landValue = this.getAtXY(x,y);
+        if(!landValue) return 0;
+        return 250000*(1+this.basin.hemY(y)/HEIGHT)*
+            Math.pow(0.8,map(landValue,0.5,1,0,30));
     }
 
     getSubBasin(long, lat){

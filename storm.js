@@ -1,3 +1,17 @@
+const WIND_RADIUS_SAMPLE_COUNT = 48;
+const WIND_RADIUS_CONFIGS = WIND_IMPACT_LEVELS.map((level,index)=>({
+    threshold:level.threshold,
+    softLimit:[420,260,180][index]
+}));
+const WIND_RADIUS_GEOMETRY = Array.from({length:WIND_RADIUS_SAMPLE_COUNT},(_,sample)=>{
+    let angle = -Math.PI+sample*2*Math.PI/WIND_RADIUS_SAMPLE_COUNT;
+    return {angle,sin:Math.sin(angle),cos:Math.cos(angle)};
+});
+const WIND_IMPACT_GEOMETRY = Array.from({length:WIND_RADIUS_SAMPLE_COUNT},(_,sample)=>{
+    let angle = -Math.PI+(sample+0.5)*2*Math.PI/WIND_RADIUS_SAMPLE_COUNT;
+    return {sin:Math.sin(angle),cos:Math.cos(angle)};
+});
+
 class Storm{
     constructor(basin,data){
         this.basin = basin instanceof Basin && basin;
@@ -30,6 +44,7 @@ class Storm{
         this.deaths = 0;
         this.damage = 0;
         this.landfalls = 0;
+        this.windRadiiCache = undefined;
         if(!this.current && data instanceof LoadData) this.load(data);
     }
 
@@ -225,6 +240,14 @@ class Storm{
     getWindRadii(data,previousData,motionTicks=ADVISORY_TICKS){
         if(!(data instanceof StormData) || (!tropOrSub(data.type) && data.type!==EXTROP)) return [];
 
+        let previousX = previousData instanceof StormData ? previousData.pos.x : undefined;
+        let previousY = previousData instanceof StormData ? previousData.pos.y : undefined;
+        let cacheKey = [data.pos.x,data.pos.y,data.pressure,data.windSpeed,data.type,
+            data.radiusOfMaxWind,previousX,previousY,motionTicks];
+        let cached = this.windRadiiCache;
+        if(cached && cached.key.every((value,index)=>value===cacheKey[index]))
+            return cached.value;
+
         // Convert the displacement between fixes to a storm-motion vector in
         // knots. Screen y increases southward, so northward motion is negative y.
         let motionX = 0;
@@ -257,11 +280,8 @@ class Storm{
             data.radiusOfMaxWind : StormData.estimateRadiusOfMaxWind(data.pressure,maximumWind,data.type);
         let effectiveInnerRadius = radiusOfMaxWind*pressureBreadth*(data.type===MONSOON ? 1.4 : data.type===EXTROP ? 1.18 : 1);
         let decayExponent = constrain((data.type===EXTROP ? 0.54 : 0.62)/pressureBreadth,0.34,0.78);
-        let configs = WIND_IMPACT_LEVELS.map((level,index)=>({
-            threshold:level.threshold,
-            softLimit:[420,260,180][index]
-        }));
-        let sampleCount = 48;
+        let configs = WIND_RADIUS_CONFIGS;
+        let sampleCount = WIND_RADIUS_SAMPLE_COUNT;
         let circulationDirection = this.basin.SHem ? -1 : 1;
         let motionMagnitudeSq = sq(motionX)+sq(motionY);
 
@@ -275,16 +295,15 @@ class Storm{
             // Keep extreme-mode wind fields usable without pinning every large
             // storm to exactly the same radius. Past the former hard limit the
             // radius continues to grow logarithmically instead of being clipped.
-            let softenRadius = radius=>radius<=config.softLimit ? radius :
-                config.softLimit*(1+0.35*Math.log(radius/config.softLimit));
             let radii = [];
             let hasThresholdWind = false;
             for(let sample=0;sample<sampleCount;sample++){
-                let angle = -PI+sample*TAU/sampleCount;
+                let geometry = WIND_RADIUS_GEOMETRY[sample];
+                let angle = geometry.angle;
                 // Tangential cyclone-relative wind: counter-clockwise in the
                 // northern hemisphere and clockwise in the southern hemisphere.
-                let tangentX = circulationDirection*Math.sin(angle);
-                let tangentY = -circulationDirection*Math.cos(angle);
+                let tangentX = circulationDirection*geometry.sin;
+                let tangentY = -circulationDirection*geometry.cos;
                 let alongMotion = motionX*tangentX+motionY*tangentY;
                 let discriminant = sq(alongMotion)+sq(config.threshold)-motionMagnitudeSq;
                 let requiredCycloneWind = discriminant>0 ?
@@ -297,10 +316,14 @@ class Storm{
                 let smoothAmplitude = data.type===MONSOON ? 0.17-level*0.02 : data.type===EXTROP ? 0.15-level*0.018 : 0.09-level*0.015;
                 let smoothBias = smoothAmplitude*Math.sin(data.pos.x*0.035+data.pos.y*0.021+angle*2+level*0.83);
                 let factor = constrain(1+smoothBias,data.type===MONSOON ? 0.72 : data.type===EXTROP ? 0.76 : 0.84,data.type===MONSOON ? 1.28 : data.type===EXTROP ? 1.24 : 1.16);
-                radii.push(round(softenRadius(radius*factor)/5)*5);
+                radius *= factor;
+                if(radius>config.softLimit)
+                    radius = config.softLimit*(1+0.35*Math.log(radius/config.softLimit));
+                radii.push(round(radius/5)*5);
             }
             if(hasThresholdWind) result.push({threshold:config.threshold,radii});
         }
+        this.windRadiiCache = {key:cacheKey,value:result};
         return result;
     }
 
@@ -327,17 +350,6 @@ class Storm{
         let latitudeScale = HEIGHT/latitudeSpan;
         let latitudeCosine = max(0.25,Math.cos(data.coord().latitude*Math.PI/180));
 
-        let populationAt = (x,y)=>{
-            // Coordinate.convertFromXY clamps coordinates, so reject samples
-            // outside the visible basin before looking them up at an edge.
-            if(x<0 || x>WIDTH || y<0 || y>HEIGHT) return 0;
-            let coordinate = Coordinate.convertFromXY(this.basin.mapType,x,y);
-            let landValue = land.get(coordinate);
-            if(!landValue) return 0;
-            return 250000*(1+this.basin.hemY(y)/HEIGHT)*
-                Math.pow(0.8,map(landValue,0.5,1,0,30));
-        };
-
         let damageExposure = 0;
         let deathExposure = 0;
         let sampleCount = outerField.radii.length;
@@ -346,11 +358,34 @@ class Storm{
             level,
             field:fieldsByThreshold[level.threshold]
         }));
+        let accumulateBand = (level,innerRadius,outerRadius,geometry)=>{
+            if(outerRadius<=innerRadius) return;
+            for(let radialSample=0;radialSample<WIND_IMPACT_RADIAL_SAMPLES;radialSample++){
+                let f0 = radialSample/WIND_IMPACT_RADIAL_SAMPLES;
+                let f1 = (radialSample+1)/WIND_IMPACT_RADIAL_SAMPLES;
+                let radius0 = lerp(innerRadius,outerRadius,f0);
+                let radius1 = lerp(innerRadius,outerRadius,f1);
+                // Equal-area radial midpoint; this avoids over-weighting the
+                // outer edge of a large ring.
+                let sampleRadius = Math.sqrt((sq(radius0)+sq(radius1))/2);
+                let radiusX = sampleRadius/(60*latitudeCosine)*longitudeScale;
+                let radiusY = sampleRadius/60*latitudeScale;
+                let x = data.pos.x+geometry.cos*radiusX;
+                let y = data.pos.y+geometry.sin*radiusY;
+                let population = land.populationAtXY(x,y);
+                if(!population) continue;
+
+                let area = 0.5*(sq(radius1)-sq(radius0))*sectorAngle;
+                let normalizedArea = area/WIND_IMPACT_REFERENCE_AREA;
+                damageExposure += population*normalizedArea*level.damageMultiplier;
+                deathExposure += population*normalizedArea*level.deathMultiplier;
+            }
+        };
 
         for(let sample=0;sample<sampleCount;sample++){
             // Use the middle of each angular sector for area sampling rather
             // than reusing the polygon vertices used for rendering.
-            let angle = -PI+(sample+0.5)*sectorAngle;
+            let geometry = WIND_IMPACT_GEOMETRY[sample];
             let outerRadius = max(0,outerField.radii[sample] || 0);
             let middleRadius = fields[1].field ?
                 max(0,fields[1].field.radii[sample] || 0) : 0;
@@ -361,35 +396,9 @@ class Storm{
             // smoothed edge from producing a negative ring or double-count.
             middleRadius = min(outerRadius,middleRadius);
             innerRadius = min(middleRadius,innerRadius);
-            let bands = [
-                {level:fields[0].level,inner:middleRadius,outer:outerRadius},
-                {level:fields[1].level,inner:innerRadius,outer:middleRadius},
-                {level:fields[2].level,inner:0,outer:innerRadius}
-            ];
-
-            for(let band of bands){
-                if(band.outer<=band.inner) continue;
-                for(let radialSample=0;radialSample<WIND_IMPACT_RADIAL_SAMPLES;radialSample++){
-                    let f0 = radialSample/WIND_IMPACT_RADIAL_SAMPLES;
-                    let f1 = (radialSample+1)/WIND_IMPACT_RADIAL_SAMPLES;
-                    let radius0 = lerp(band.inner,band.outer,f0);
-                    let radius1 = lerp(band.inner,band.outer,f1);
-                    // Equal-area radial midpoint; this avoids over-weighting
-                    // the outer edge of a large ring.
-                    let sampleRadius = Math.sqrt((sq(radius0)+sq(radius1))/2);
-                    let radiusX = sampleRadius/(60*latitudeCosine)*longitudeScale;
-                    let radiusY = sampleRadius/60*latitudeScale;
-                    let x = data.pos.x+Math.cos(angle)*radiusX;
-                    let y = data.pos.y+Math.sin(angle)*radiusY;
-                    let population = populationAt(x,y);
-                    if(!population) continue;
-
-                    let area = 0.5*(sq(radius1)-sq(radius0))*sectorAngle;
-                    let normalizedArea = area/WIND_IMPACT_REFERENCE_AREA;
-                    damageExposure += population*normalizedArea*band.level.damageMultiplier;
-                    deathExposure += population*normalizedArea*band.level.deathMultiplier;
-                }
-            }
+            accumulateBand(fields[0].level,middleRadius,outerRadius,geometry);
+            accumulateBand(fields[1].level,innerRadius,middleRadius,geometry);
+            accumulateBand(fields[2].level,0,innerRadius,geometry);
         }
 
         return {damageExposure,deathExposure};
@@ -447,8 +456,8 @@ class Storm{
                 let radius = level.radii[sample];
                 let radiusX = radius/(60*latitudeCosine)*longitudeScale;
                 let radiusY = radius/60*latitudeScale;
-                let angle = -PI+sample*TAU/level.radii.length;
-                windFields.vertex(Math.cos(angle)*radiusX,Math.sin(angle)*radiusY);
+                let geometry = WIND_RADIUS_GEOMETRY[sample];
+                windFields.vertex(geometry.cos*radiusX,geometry.sin*radiusY);
             }
             windFields.endShape(CLOSE);
         }
@@ -1428,11 +1437,20 @@ class ActiveSystem extends StormData{
     }
 
     update(){
+        this.basin.env.beginQueryCache();
+        try{
+            return this.updateWithEnvironmentCache();
+        }finally{
+            this.basin.env.endQueryCache();
+        }
+    }
+
+    updateWithEnvironmentCache(){
         let basin = this.basin;
 
         let u = {};
         u.f = (field)=>basin.env.get(field,this.pos.x,this.pos.y,basin.tick);
-        u.land = ()=>land.get(this.coord());
+        u.land = ()=>land.getAtXY(this.pos.x,this.pos.y);
 
         // this.getSteering();
         if(STORM_ALGORITHM[basin.actMode].steering)
@@ -1460,7 +1478,7 @@ class ActiveSystem extends StormData{
         // let SST = basin.env.get("SST",x,y,z);
         // let jet = basin.env.get("jetstream",x,y,z);
         // jet = basin.hemY(y)-jet;
-        let lnd = land.get(this.coord());
+        let lnd = land.getAtXY(this.pos.x,this.pos.y);
         // let moisture = basin.env.get("moisture",x,y,z);
         // let shear = basin.env.get("shear",x,y,z).mag()+this.interaction.shear;
         
@@ -1581,7 +1599,7 @@ class ActiveSystem extends StormData{
             }
             let lf = 0;
             if(!prevland && lnd) lf = 1;
-            let sub = land.getSubBasin(Coordinate.convertFromXY(basin.mapType,x,y));
+            let sub = land.getSubBasinAtXY(x,y);
             if(!this.fetchStorm().inBasinTC || basin.subInBasin(sub)){
                 currentStorm.damage += dam;
                 currentStorm.damage = round(currentStorm.damage*100)/100;
@@ -1614,7 +1632,6 @@ class ActiveSystem extends StormData{
         let adv = new StormData(this.basin,x,y,p,w,ty,this.radiusOfMaxWind,this.circulationSize);
         this.fetchStorm().updateStats(adv);
         this.fetchStorm().record.push(adv);
-        this.doTrackForecast();
         // this.fetchStorm().renderTrack(true);
     }
 
@@ -1679,70 +1696,54 @@ class ActiveSystem extends StormData{
         }
     }
 
-    doTrackForecast(){
-        let basin = this.basin;
-        this.trackForecast/* .points */ = [];
+    static updateTrackForecasts(basin){
+        let forecastStates = [];
 
-        // Track forecasts used to integrate only this system and therefore
-        // never rebuilt the pairwise interaction state that the live
-        // simulation uses. Keep a private snapshot of every active system so
-        // Fujiwhara motion can be evaluated against the other systems' moving
-        // forecast positions without changing the simulation itself.
-        let forecastSystems = [];
-        let forecastTarget;
-        for(let system of basin.activeSystems){
-            if(!system || !system.pos) continue;
-            let forecastSystem = Object.create(Object.getPrototypeOf(system));
-            Object.assign(forecastSystem,system);
-            forecastSystem.pos = system.pos.copy();
-            forecastSystem.steering = createVector(0);
-            forecastSystem.resetInteraction();
-            forecastSystems.push(forecastSystem);
-            if(system===this) forecastTarget = forecastSystem;
+        // Clone the active set once and advance it as one forecast ensemble.
+        // Previously every storm repeated this full N-system integration.
+        for(let source of basin.activeSystems){
+            if(!source || !source.pos) continue;
+            source.trackForecast/* .points */ = [];
+            let system = Object.create(Object.getPrototypeOf(source));
+            Object.assign(system,source);
+            system.pos = source.pos.copy();
+            system.steering = createVector(0);
+            system.resetInteraction();
+            let state = {source,system,tick:basin.tick,steering:createVector(0)};
+            state.utility = {
+                f: field=>basin.env.get(field,system.pos.x,system.pos.y,state.tick),
+                land: ()=>land.getAtXY(system.pos.x,system.pos.y)
+            };
+            forecastStates.push(state);
         }
 
-        // Keep the method usable for a system that is not currently present in
-        // activeSystems (for example while a caller is restoring state).
-        if(!forecastTarget){
-            forecastTarget = Object.create(Object.getPrototypeOf(this));
-            Object.assign(forecastTarget,this);
-            forecastTarget.pos = this.pos.copy();
-            forecastTarget.steering = createVector(0);
-            forecastTarget.resetInteraction();
-            forecastSystems.push(forecastTarget);
-        }
-
+        let algorithm = STORM_ALGORITHM[basin.actMode].steering || STORM_ALGORITHM.defaults.steering;
         for(let f=0;f<120;f++){
             let t = basin.tick+f;
 
-            // Recompute the same pairwise interaction state used by a live
-            // simulation step, but from the forecast positions.
-            for(let system of forecastSystems)
-                system.resetInteraction();
-            for(let i=0;i<forecastSystems.length;i++){
-                for(let j=i+1;j<forecastSystems.length;j++)
-                    forecastSystems[i].interact(forecastSystems[j],true);
+            for(let state of forecastStates)
+                state.system.resetInteraction();
+            for(let i=0;i<forecastStates.length;i++){
+                for(let j=i+1;j<forecastStates.length;j++)
+                    forecastStates[i].system.interact(forecastStates[j].system,true);
             }
 
-            // Advance all systems before recording the target. Advancing the
-            // other systems is what makes the next forecast hour's Fujiwhara
-            // vector follow the evolving orbit instead of the initial offset.
-            for(let system of forecastSystems){
-                let forecastSteering = createVector(0);
-                let u = {};
-                u.f = (field)=>basin.env.get(field,system.pos.x,system.pos.y,t);
-                u.land = ()=>land.get(Coordinate.convertFromXY(basin.mapType,system.pos));
-
-                if(STORM_ALGORITHM[basin.actMode].steering)
-                    STORM_ALGORITHM[basin.actMode].steering(system,forecastSteering,u);
-                else
-                    STORM_ALGORITHM.defaults.steering(system,forecastSteering,u);
-
-                system.pos.add(forecastSteering);
+            for(let state of forecastStates){
+                state.tick = t;
+                state.steering.set(0,0);
+                basin.env.beginQueryCache();
+                try{
+                    algorithm(state.system,state.steering,state.utility);
+                }finally{
+                    basin.env.endQueryCache();
+                }
+                state.system.pos.add(state.steering);
             }
 
-            if((f+1)%ADVISORY_TICKS===0)
-                this.trackForecast/* .points */.push({x:forecastTarget.pos.x,y:forecastTarget.pos.y});
+            if((f+1)%ADVISORY_TICKS===0){
+                for(let state of forecastStates)
+                    state.source.trackForecast/* .points */.push({x:state.system.pos.x,y:state.system.pos.y});
+            }
         }
     }
 
