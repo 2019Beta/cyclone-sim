@@ -238,7 +238,7 @@ class Storm{
     }
 
     getWindRadii(data,previousData,motionTicks=ADVISORY_TICKS){
-        if(!(data instanceof StormData) || (!tropOrSub(data.type) && data.type!==EXTROP)) return [];
+        if(!(data instanceof StormData) || !Number.isInteger(data.type) || data.type<0 || data.type>=STORM_TYPES) return [];
 
         let previousX = previousData instanceof StormData ? previousData.pos.x : undefined;
         let previousY = previousData instanceof StormData ? previousData.pos.y : undefined;
@@ -1554,7 +1554,12 @@ class ActiveSystem extends StormData{
         let currentStorm = this.fetchStorm();
         let rType = currentStorm.getStormDataByTick(basin.tick);
         rType = rType && rType.type;
-        if(tropOrSub(rType!==null ? rType : this.type)){
+        // Every classified cyclone can cause impacts. This includes
+        // extratropical cyclones, tropical disturbances, and any additional
+        // valid system types, rather than limiting losses to tropical and
+        // subtropical cyclones.
+        let lossType = rType===undefined || rType===null ? this.type : rType;
+        if(Number.isInteger(lossType) && lossType>=0 && lossType<STORM_TYPES){
             let centerPopulation = lnd ? round(250000*(1+basin.hemY(y)/HEIGHT)*pow(0.8,map(lnd,0.5,1,0,30))) : 0;
             let damPot = pow(1.062,this.windSpeed)-1;   // damage potential
             let dedPot = pow(1.045,this.windSpeed)-1;    // death potential
@@ -1570,9 +1575,9 @@ class ActiveSystem extends StormData{
                 motionTicks = max(1,basin.tick-previousTick);
             }
             let impactData = this;
-            let impactType = rType===undefined || rType===null ? this.type : rType;
-            if(impactType!==this.type && tropOrSub(impactType)){
-                // During a transition, use the last recorded tropical type
+            let impactType = lossType;
+            if(impactType!==this.type){
+                // During a transition, use the last recorded system type
                 // while retaining the active system's current intensity and
                 // position for the wind field.
                 impactData = new StormData(
