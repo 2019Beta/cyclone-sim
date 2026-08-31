@@ -500,22 +500,29 @@ class Storm{
         windFields.translate(data.pos.x,data.pos.y);
         windFields.strokeWeight(1.5);
         if(fieldStyle===WIND_FIELD_STYLE_JMA){
-            // JMA represents the wind field with one outer (34 kt) circle.
+            // JMA represents the wind field with one outer (34 kt) circle and
+            // an inner 64 kt circle for the hurricane-force wind area.
             // Its center is displaced toward the stronger side of the
             // underlying asymmetric field, so it can be eccentric to the
             // storm center while remaining a simple circle in geographic
             // distance.
-            let level = radii[0];
-            let style = styles[level.threshold];
-            let circle = this.getJMAWindFieldCircle(level);
-            if(circle && circle.radius>0){
-                let radiusX = circle.radius/(60*latitudeCosine)*longitudeScale;
-                let radiusY = circle.radius/60*latitudeScale;
-                let offsetX = circle.offsetX/(60*latitudeCosine)*longitudeScale;
-                let offsetY = circle.offsetY/60*latitudeScale;
-                windFields.fill(...style.fill);
-                windFields.stroke(...style.stroke);
-                windFields.ellipse(offsetX,offsetY,radiusX*2,radiusY*2);
+            let jmaLevels = [radii[0]];
+            let galeLevel = radii.find(level=>level.threshold===64);
+            if(galeLevel) jmaLevels.push(galeLevel);
+            for(let level of jmaLevels){
+                if(!level) continue;
+                let style = level.threshold===64 ?
+                    {fill:[255,0,0,70],stroke:[255,0,0,245]} : styles[level.threshold];
+                let circle = this.getJMAWindFieldCircle(level);
+                if(circle && circle.radius>0){
+                    let radiusX = circle.radius/(60*latitudeCosine)*longitudeScale;
+                    let radiusY = circle.radius/60*latitudeScale;
+                    let offsetX = circle.offsetX/(60*latitudeCosine)*longitudeScale;
+                    let offsetY = circle.offsetY/60*latitudeScale;
+                    windFields.fill(...style.fill);
+                    windFields.stroke(...style.stroke);
+                    windFields.ellipse(offsetX,offsetY,radiusX*2,radiusY*2);
+                }
             }
         }else{
             let previousQuadrants;

@@ -1,7 +1,7 @@
 About: A p5.js tropical cyclone simulation game
 
 v0.4.33 (2026-08-31):
-    + Added NHC, JTWC four-quadrant, and JMA eccentric-circle wind field styles
+    + Added JTWC,JMA style wind field styles
     + Wind fields are disabled by default in new settings
 
 v0.4.32 (2026-08-29):
