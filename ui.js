@@ -1788,6 +1788,10 @@ UI.init = function(){
 
     let timeline;
     let season_button;
+    let timelineBox;
+    let best_track_button;
+    let best_track_view = false;
+    let best_track_page = 0;
 
     const INFO_PANEL_LEFT_BOUND = 11*WIDTH/16;
 
@@ -2002,6 +2006,21 @@ UI.init = function(){
             changeViewTick(t);
         }
     });
+
+    best_track_button = panel_timeline_container.append(false,INFO_PANEL_LEFT_BOUND+30,3,stormInfoPanel.width-60,24,function(s){ // timeline "View Best Track" button
+        let target = stormInfoPanel.target;
+        if(timeline.active() && target instanceof Storm){
+            this.setBox(3*WIDTH/5,32,WIDTH/6,24);
+            s.button(best_track_view ? "View Intensity Graph" : "View Best Track",false,15);
+        }else
+            this.hide();
+    },function(){
+        let target = stormInfoPanel.target;
+        if(timeline.active() && target instanceof Storm){
+            best_track_view = !best_track_view;
+            best_track_page = 0;
+        }
+    });
     
     stormInfoPanel.append(false,30,stormInfoPanel.height-27,stormInfoPanel.width-60,24,function(s){ // show season summary timeline button
         s.button("View Timeline",false,15);
@@ -2018,6 +2037,76 @@ UI.init = function(){
         let builtAt;
         let builtFor;
         let active = false;
+        let best_track_previous_button;
+        let best_track_next_button;
+
+        const BEST_TRACK_ROWS_PER_PAGE = 14;
+        const BEST_TRACK_HEADER_Y = 56;
+        const BEST_TRACK_FIRST_ROW_Y = 82;
+        const BEST_TRACK_ROW_HEIGHT = 16;
+
+        function best_track_entries(target){
+            let entries = [];
+            if(!(target instanceof Storm)) return entries;
+            for(let i=0;i<target.record.length;i++){
+                let tick = target.get_tick_from_record_index(i);
+                if(target.formationTime!==undefined && tick<target.formationTime) continue;
+                if(target.dissipationTime!==undefined && tick>=target.dissipationTime) break;
+                let data = target.record[i];
+                if(data instanceof StormData) entries.push({tick:tick,data:data});
+            }
+            return entries;
+        }
+
+        function best_track_page_count(target){
+            return max(1,ceil(best_track_entries(target).length/BEST_TRACK_ROWS_PER_PAGE));
+        }
+
+        function format_best_track_coordinate(value,positive,negative){
+            return round(abs(value)*10)/10 + '\u00B0' + (value<0 ? negative : positive);
+        }
+
+        function render_best_track(target){
+            let entries = best_track_entries(target);
+            let pageCount = max(1,ceil(entries.length/BEST_TRACK_ROWS_PER_PAGE));
+            best_track_page = constrain(best_track_page,0,pageCount-1);
+
+            text('Best track of ' + target.getFullNameByTick('peak'),BOX_WIDTH*0.5,BOX_HEIGHT*0.03);
+            textSize(12);
+            textAlign(LEFT,CENTER);
+            let timeX = BOX_WIDTH*0.05;
+            let latitudeX = BOX_WIDTH*0.34;
+            let longitudeX = BOX_WIDTH*0.49;
+            let windX = BOX_WIDTH*0.67;
+            let pressureX = BOX_WIDTH*0.82;
+            text('Date/Time',timeX,BEST_TRACK_HEADER_Y);
+            text('Latitude',latitudeX,BEST_TRACK_HEADER_Y);
+            text('Longitude',longitudeX,BEST_TRACK_HEADER_Y);
+            text('Wind',windX,BEST_TRACK_HEADER_Y);
+            text('Pressure',pressureX,BEST_TRACK_HEADER_Y);
+            stroke(COLORS.UI.text);
+            line(timeX,BEST_TRACK_HEADER_Y+11,BOX_WIDTH*0.9,BEST_TRACK_HEADER_Y+11);
+            noStroke();
+
+            let first = best_track_page*BEST_TRACK_ROWS_PER_PAGE;
+            let last = min(entries.length,first+BEST_TRACK_ROWS_PER_PAGE);
+            for(let i=first;i<last;i++){
+                let entry = entries[i];
+                let coord = entry.data.coord();
+                let y = BEST_TRACK_FIRST_ROW_Y+(i-first)*BEST_TRACK_ROW_HEIGHT;
+                text(formatDate(UI.viewBasin.tickMoment(entry.tick)),timeX,y);
+                text(format_best_track_coordinate(coord.latitude,'N','S'),latitudeX,y);
+                text(format_best_track_coordinate(coord.longitude,'E','W'),longitudeX,y);
+                text(displayWindspeed(entry.data.windSpeed),windX,y);
+                text(entry.data.pressure + ' hPa',pressureX,y);
+            }
+
+            textAlign(CENTER,BOTTOM);
+            if(entries.length<1)
+                text('No best track data available',BOX_WIDTH*0.5,BOX_HEIGHT-7);
+            else if(pageCount>1)
+                text('Page ' + (best_track_page+1) + ' / ' + pageCount,BOX_WIDTH*0.5,BOX_HEIGHT-7);
+        }
 
         function build(){
             parts = [];
@@ -2128,8 +2217,25 @@ UI.init = function(){
         const bBound = BOX_HEIGHT*0.93;
         const maxRowFit = Math.floor((bBound-tBound)/15);
 
-        let timelineBox = timeline_container.append(false,0,0,BOX_WIDTH,BOX_HEIGHT,function(s){
+        timelineBox = timeline_container.append(false,0,0,BOX_WIDTH,BOX_HEIGHT,function(s){
             let target = stormInfoPanel.target;
+            if(!(target instanceof Storm)){
+                best_track_view = false;
+                best_track_page = 0;
+            }
+            let showingBestTrack = best_track_view && target instanceof Storm;
+            let pageCount = showingBestTrack ? best_track_page_count(target) : 1;
+            if(target instanceof Storm)
+                best_track_button.show();
+            else
+                best_track_button.hide();
+            if(showingBestTrack && pageCount>1){
+                best_track_previous_button.show();
+                best_track_next_button.show();
+            }else{
+                best_track_previous_button.hide();
+                best_track_next_button.hide();
+            }
             if(target!==builtFor || (UI.viewBasin.tick!==builtAt && (UI.viewBasin.getSeason(builtAt)===target || UI.viewBasin.getSeason(builtAt)===(target+1)))) build();
             fill(COLORS.UI.box);
             noStroke();
@@ -2140,6 +2246,11 @@ UI.init = function(){
             if(target === undefined)
                 text('No timeline selected', BOX_WIDTH * 0.5, BOX_HEIGHT * 0.03);
             else if(target instanceof Storm){
+                if(showingBestTrack){
+                    season_button.show();
+                    render_best_track(target);
+                    return;
+                }
                 text('Intensity graph of ' + target.getFullNameByTick('peak'), BOX_WIDTH * 0.5, BOX_HEIGHT * 0.03);
                 season_button.show();
                 let begin_tick = target.enterTime;
@@ -2250,6 +2361,7 @@ UI.init = function(){
                 }
             }
         },function(){
+            if(best_track_view) return;
             let newTarget;
             for(let i=parts.length-1;i>=0;i--){
                 let p = parts[i];
@@ -2272,6 +2384,26 @@ UI.init = function(){
             timelineBox.hide();
             stormInfoPanel.show();
             active = false;
+            best_track_view = false;
+            best_track_page = 0;
+        });
+
+        best_track_previous_button = timelineBox.append(false,BOX_WIDTH/2-80,BOX_HEIGHT-27,24,24,function(s){
+            s.button('',false,18,best_track_page<1);
+            triangle(19,5,19,19,5,12);
+        },function(){
+            if(best_track_page>0) best_track_page--;
+        });
+
+        best_track_next_button = timelineBox.append(false,BOX_WIDTH/2+56,BOX_HEIGHT-27,24,24,function(s){
+            let target = stormInfoPanel.target;
+            let pageCount = target instanceof Storm ? best_track_page_count(target) : 1;
+            s.button('',false,18,best_track_page>=pageCount-1);
+            triangle(5,5,5,19,19,12);
+        },function(){
+            let target = stormInfoPanel.target;
+            let pageCount = target instanceof Storm ? best_track_page_count(target) : 1;
+            if(best_track_page<pageCount-1) best_track_page++;
         });
 
         const public = {};
@@ -2284,11 +2416,15 @@ UI.init = function(){
             stormInfoPanel.hide();
             timelineBox.show();
             active = true;
+            best_track_view = false;
+            best_track_page = 0;
         };
 
         public.reset = function(){
             active = false;
             builtAt = -1;
+            best_track_view = false;
+            best_track_page = 0;
         };
 
         return public;
