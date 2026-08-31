@@ -404,6 +404,55 @@ class Storm{
         return {damageExposure,deathExposure};
     }
 
+    getWindFieldQuadrants(level){
+        if(!level || !level.radii || typeof level.radii.length!=="number") return [];
+
+        let sampleCount = level.radii.length;
+        let quadrants = [];
+        for(let quadrant=0;quadrant<WIND_FIELD_QUADRANT_COUNT;quadrant++){
+            let start = floor(quadrant*sampleCount/WIND_FIELD_QUADRANT_COUNT);
+            let end = floor((quadrant+1)*sampleCount/WIND_FIELD_QUADRANT_COUNT);
+            let total = 0;
+            for(let sample=start;sample<end;sample++) total += max(0,level.radii[sample] || 0);
+            let count = max(1,end-start);
+            quadrants.push(round(total/count/WINDSPEED_ROUNDING)*WINDSPEED_ROUNDING);
+        }
+        return quadrants;
+    }
+
+    getJMAWindFieldCircle(level){
+        if(!level || !level.radii || level.radii.length<1) return null;
+
+        let sampleCount = level.radii.length;
+        let radiusTotal = 0;
+        let offsetXTotal = 0;
+        let offsetYTotal = 0;
+        for(let sample=0;sample<sampleCount;sample++){
+            let radius = max(0,level.radii[sample] || 0);
+            let angle = -PI+sample*TAU/sampleCount;
+            radiusTotal += radius;
+            offsetXTotal += radius*cos(angle);
+            offsetYTotal += radius*sin(angle);
+        }
+
+        let radius = radiusTotal/sampleCount;
+        let offsetX = 2*offsetXTotal/sampleCount;
+        let offsetY = 2*offsetYTotal/sampleCount;
+        let offsetMagnitude = Math.hypot(offsetX,offsetY);
+        let maxOffset = radius*WIND_FIELD_JMA_MAX_ECCENTRICITY;
+        if(offsetMagnitude>maxOffset && offsetMagnitude>0){
+            let scale = maxOffset/offsetMagnitude;
+            offsetX *= scale;
+            offsetY *= scale;
+        }
+
+        return {
+            radius:round(radius/WINDSPEED_ROUNDING)*WINDSPEED_ROUNDING,
+            offsetX,
+            offsetY
+        };
+    }
+
     renderWindField(){
         if(!this.aliveAt(viewTick)) return;
         let data = this.getStormDataByTick(viewTick,true);
@@ -443,23 +492,71 @@ class Storm{
             50: {fill:[255,153,0,58], stroke:[255,160,0,235]},
             64: {fill:[255, 92,0,70], stroke:[255,108,0,245]}
         };
+        let fieldStyle = Number.isInteger(simSettings.windFieldStyle) &&
+            simSettings.windFieldStyle>=0 && simSettings.windFieldStyle<WIND_FIELD_STYLE_COUNT ?
+            simSettings.windFieldStyle : WIND_FIELD_STYLE_NHC;
 
         windFields.push();
         windFields.translate(data.pos.x,data.pos.y);
         windFields.strokeWeight(1.5);
-        for(let level of radii){
+        if(fieldStyle===WIND_FIELD_STYLE_JMA){
+            // JMA represents the wind field with one outer (34 kt) circle.
+            // Its center is displaced toward the stronger side of the
+            // underlying asymmetric field, so it can be eccentric to the
+            // storm center while remaining a simple circle in geographic
+            // distance.
+            let level = radii[0];
             let style = styles[level.threshold];
-            windFields.fill(...style.fill);
-            windFields.stroke(...style.stroke);
-            windFields.beginShape();
-            for(let sample=0;sample<level.radii.length;sample++){
-                let radius = level.radii[sample];
-                let radiusX = radius/(60*latitudeCosine)*longitudeScale;
-                let radiusY = radius/60*latitudeScale;
-                let geometry = WIND_RADIUS_GEOMETRY[sample];
-                windFields.vertex(geometry.cos*radiusX,geometry.sin*radiusY);
+            let circle = this.getJMAWindFieldCircle(level);
+            if(circle && circle.radius>0){
+                let radiusX = circle.radius/(60*latitudeCosine)*longitudeScale;
+                let radiusY = circle.radius/60*latitudeScale;
+                let offsetX = circle.offsetX/(60*latitudeCosine)*longitudeScale;
+                let offsetY = circle.offsetY/60*latitudeScale;
+                windFields.fill(...style.fill);
+                windFields.stroke(...style.stroke);
+                windFields.ellipse(offsetX,offsetY,radiusX*2,radiusY*2);
             }
-            windFields.endShape(CLOSE);
+        }else{
+            let previousQuadrants;
+            for(let level of radii){
+                let style = styles[level.threshold];
+                windFields.fill(...style.fill);
+                windFields.stroke(...style.stroke);
+                windFields.beginShape();
+                if(fieldStyle===WIND_FIELD_STYLE_JTWC){
+                    // JTWC uses one radius for each of the NW, NE, SE, and SW
+                    // quadrants. Draw a short circular arc for each quadrant;
+                    // the repeated boundary points also keep the quadrant
+                    // divisions visible when adjacent radii differ.
+                    let quadrants = this.getWindFieldQuadrants(level);
+                    if(previousQuadrants)
+                        for(let quadrant=0;quadrant<quadrants.length;quadrant++)
+                            quadrants[quadrant] = min(quadrants[quadrant],previousQuadrants[quadrant]);
+                    previousQuadrants = quadrants;
+                    for(let quadrant=0;quadrant<WIND_FIELD_QUADRANT_COUNT;quadrant++){
+                        let radius = quadrants[quadrant];
+                        let startAngle = -PI+quadrant*PI/2;
+                        for(let step=0;step<=WIND_FIELD_QUADRANT_ARC_SAMPLES;step++){
+                            let angle = startAngle+step*PI/2/WIND_FIELD_QUADRANT_ARC_SAMPLES;
+                            let radiusX = radius/(60*latitudeCosine)*longitudeScale;
+                            let radiusY = radius/60*latitudeScale;
+                            windFields.vertex(cos(angle)*radiusX,sin(angle)*radiusY);
+                        }
+                    }
+                }else{
+                    // NHC style: retain the smooth 48-point asymmetric
+                    // boundary generated by getWindRadii().
+                    for(let sample=0;sample<level.radii.length;sample++){
+                        let radius = level.radii[sample];
+                        let radiusX = radius/(60*latitudeCosine)*longitudeScale;
+                        let radiusY = radius/60*latitudeScale;
+                        let geometry = WIND_RADIUS_GEOMETRY[sample];
+                        windFields.vertex(geometry.cos*radiusX,geometry.sin*radiusY);
+                    }
+                }
+                windFields.endShape(CLOSE);
+            }
         }
         windFields.pop();
     }

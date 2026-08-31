@@ -1,5 +1,5 @@
 const TITLE = "Cyclone Simulator";
-const VERSION_NUMBER = "0.4.32";
+const VERSION_NUMBER = "0.4.33";
 
 const SAVE_FORMAT = 7;  // Format #7 in use starting in v0.4
 const EARLIEST_COMPATIBLE_FORMAT = 0;
@@ -262,6 +262,14 @@ const TROPWAVE = 3;
 // Keep new storm types at the end so numeric IDs in existing saves remain valid.
 const MONSOON = 4;
 const STORM_TYPES = 5;
+const WIND_FIELD_STYLE_NHC = 0;
+const WIND_FIELD_STYLE_JTWC = 1;
+const WIND_FIELD_STYLE_JMA = 2;
+const WIND_FIELD_STYLE_NAMES = Object.freeze(['NHC', 'JTWC', 'JMA']);
+const WIND_FIELD_STYLE_COUNT = WIND_FIELD_STYLE_NAMES.length;
+const WIND_FIELD_QUADRANT_COUNT = 4;
+const WIND_FIELD_QUADRANT_ARC_SAMPLES = 6;
+const WIND_FIELD_JMA_MAX_ECCENTRICITY = 0.35;
 const MONSOON_ICON = Object.freeze({
     symbol: 'MD',
     centerDiameter: 1.15,

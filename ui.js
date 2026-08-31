@@ -1024,6 +1024,11 @@ UI.init = function(){
         s.button("Wind Fields: "+b,true);
     },function(){
         simSettings.setShowWindFields("toggle");
+    }).append(false,0,34,300,30,function(s){     // wind field style
+        let style = WIND_FIELD_STYLE_NAMES[simSettings.windFieldStyle] || WIND_FIELD_STYLE_NAMES[WIND_FIELD_STYLE_NHC];
+        s.button("Wind Field Style: "+style,true);
+    },function(){
+        simSettings.setWindFieldStyle("incmod",WIND_FIELD_STYLE_COUNT);
     }).append(false,0,34,300,30,function(s){     // snow
         let b = simSettings.snowLayers ? (simSettings.snowLayers*10) + " layers" : "Disabled";
         s.button("Snow: "+b,true);
@@ -1063,7 +1068,7 @@ UI.init = function(){
         refreshTracks(true);
     });
 
-    settingsMenu.append(false,WIDTH/2-150,7*HEIGHT/8-20,300,30,function(s){ // "Back" button
+    settingsMenu.append(false,WIDTH/2-150,7*HEIGHT/8+20,300,30,function(s){ // "Back" button
         s.button("Back",true,20);
     },function(){
         settingsMenu.hide();

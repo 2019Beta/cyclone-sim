@@ -1,5 +1,9 @@
 About: A p5.js tropical cyclone simulation game
 
+v0.4.33 (2026-08-31):
+    + Added NHC, JTWC four-quadrant, and JMA eccentric-circle wind field styles
+    + Wind fields are disabled by default in new settings
+
 v0.4.32 (2026-08-29):
     + Damage and death statistics now include land covered by a tropical cyclone's wind field
         > 34 kt, 50 kt, and 64 kt bands use progressively higher local impact rates
