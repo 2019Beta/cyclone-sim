@@ -2258,14 +2258,24 @@ UI.init = function(){
                 }
                 text('Intensity graph of ' + target.getFullNameByTick('peak'), BOX_WIDTH * 0.5, BOX_HEIGHT * 0.03);
                 season_button.show();
+                const intensity_right_bound = BOX_WIDTH*0.90;
                 let begin_tick = target.enterTime;
                 let end_tick = target.exitTime || UI.viewBasin.tick;
                 let max_wind;
+                let min_pressure;
+                let max_pressure;
                 for(let t = begin_tick; t <= end_tick; t += ADVISORY_TICKS){
-                    if(target.getStormDataByTick(t)){
-                        let w = target.getStormDataByTick(t).windSpeed;
+                    let data = target.getStormDataByTick(t);
+                    if(data){
+                        let w = data.windSpeed;
                         if(max_wind === undefined || w > max_wind)
                             max_wind = w;
+                        if(Number.isFinite(data.pressure)){
+                            if(min_pressure === undefined || data.pressure < min_pressure)
+                                min_pressure = data.pressure;
+                            if(max_pressure === undefined || data.pressure > max_pressure)
+                                max_pressure = data.pressure;
+                        }
                     }
                 }
                 let scale = UI.viewBasin.getScale(UI.viewBasin.mainSubBasin);
@@ -2276,25 +2286,64 @@ UI.init = function(){
                         let threshold = scale.classifications[i].threshold;
                         let y1 = map(threshold, 0, max_wind, bBound, tBound, true);
                         fill(red(color), green(color), blue(color), 90);
-                        rect(lBound, y1, rBound - lBound, y0 - y1);
+                        rect(lBound, y1, intensity_right_bound - lBound, y0 - y1);
                         color = scale.getColor(i);
                         y0 = y1;
                         if(threshold > max_wind)
                             break;
                         if(i === scale.classifications.length - 1 && threshold < max_wind){
                             fill(red(color), green(color), blue(color), 90);
-                            rect(lBound, tBound, rBound - lBound, y0 - tBound);
+                            rect(lBound, tBound, intensity_right_bound - lBound, y0 - tBound);
                         }
                     }
                 }
+                let pressure_axis_min;
+                let pressure_axis_max;
+                let pressure_tick_inc;
+                const pressure_color = color(0,51,102);
+                if(Number.isFinite(min_pressure) && Number.isFinite(max_pressure)){
+                    pressure_axis_min = floor(min_pressure/5)*5;
+                    pressure_axis_max = ceil(max_pressure/5)*5;
+                    if(pressure_axis_min === pressure_axis_max){
+                        pressure_axis_min -= 5;
+                        pressure_axis_max += 5;
+                    }
+                    pressure_tick_inc = max(5,ceil((pressure_axis_max-pressure_axis_min)/25)*5);
+                    pressure_axis_min = floor(pressure_axis_min/pressure_tick_inc)*pressure_tick_inc;
+                    pressure_axis_max = ceil(pressure_axis_max/pressure_tick_inc)*pressure_tick_inc;
+                }
                 stroke(COLORS.UI.text);
-                line(lBound,bBound,rBound,bBound);
-                line(rBound,bBound,rBound,tBound);
+                line(lBound,bBound,intensity_right_bound,bBound);
+                line(intensity_right_bound,bBound,intensity_right_bound,tBound);
+                if(pressure_axis_min !== undefined){
+                    const pressure_axis_x = constrain(intensity_right_bound,0,BOX_WIDTH);
+                    const pressure_tick_x = constrain(pressure_axis_x+BOX_WIDTH*0.008,pressure_axis_x,BOX_WIDTH);
+                    const pressure_label_x = constrain(min(BOX_WIDTH-31,pressure_axis_x+BOX_WIDTH*0.05),0,BOX_WIDTH);
+                    const pressure_tick_count = floor((pressure_axis_max-pressure_axis_min)/pressure_tick_inc);
+                    stroke(pressure_color);
+                    strokeWeight(1);
+                    line(pressure_axis_x,bBound,pressure_axis_x,tBound);
+                    fill(pressure_color);
+                    textSize(12);
+                    textAlign(RIGHT,CENTER);
+                    for(let i = 0; i <= pressure_tick_count; i++){
+                        let pressure = pressure_axis_min+i*pressure_tick_inc;
+                        let y = constrain(map(pressure,pressure_axis_min,pressure_axis_max,bBound,tBound,true),tBound,bBound);
+                        line(pressure_axis_x,y,pressure_tick_x,y);
+                        noStroke();
+                        text(pressure,pressure_label_x,y);
+                        stroke(pressure_color);
+                    }
+                    noStroke();
+                    textSize(11);
+                    textAlign(RIGHT,BOTTOM);
+                    text('hPa',pressure_label_x,max(12,tBound-4));
+                }
                 textSize(13);
                 fill(COLORS.UI.text);
                 for(let m = UI.viewBasin.tickMoment(begin_tick).startOf('day'); UI.viewBasin.tickFromMoment(m) <= end_tick; m.add(1, 'd')){
                     stroke(COLORS.UI.text);
-                    let x = map(UI.viewBasin.tickFromMoment(m), begin_tick, end_tick, lBound, rBound, true);
+                    let x = map(UI.viewBasin.tickFromMoment(m), begin_tick, end_tick, lBound, intensity_right_bound, true);
                     line(x, bBound, x, tBound);
                     noStroke();
                     text(m.date(), x, bBound + BOX_HEIGHT * 0.02);
@@ -2316,9 +2365,9 @@ UI.init = function(){
                         w1 = target.getStormDataByTick(t1).windSpeed;
                     else
                         w1 = w0;
-                    let x0 = map(t0, begin_tick, end_tick, lBound, rBound);
+                    let x0 = map(t0, begin_tick, end_tick, lBound, intensity_right_bound);
                     let y0 = map(w0, 0, max_wind, bBound, tBound);
-                    let x1 = map(t1, begin_tick, end_tick, lBound, rBound);
+                    let x1 = map(t1, begin_tick, end_tick, lBound, intensity_right_bound);
                     let y1 = map(w1, 0, max_wind, bBound, tBound);
                     if(tropOrSub(target.getStormDataByTick(t0).type))
                         stroke(COLORS.UI.text);
@@ -2328,6 +2377,37 @@ UI.init = function(){
                     point(x0, y0);
                     strokeWeight(2);
                     line(x0, y0, x1, y1);
+                }
+                strokeWeight(1);
+                if(pressure_axis_min !== undefined){
+                    let pressure_points = [];
+                    let pressure_segments = [];
+                    let previous_pressure_point;
+                    for(let t = begin_tick; t <= end_tick; t += ADVISORY_TICKS){
+                        let data = target.getStormDataByTick(t);
+                        if(!data || !Number.isFinite(data.pressure)){
+                            previous_pressure_point = undefined;
+                            continue;
+                        }
+                        let x = begin_tick === end_tick ? lBound : map(t,begin_tick,end_tick,lBound,intensity_right_bound,true);
+                        let y = map(data.pressure,pressure_axis_min,pressure_axis_max,bBound,tBound,true);
+                        let plotPoint = {
+                            x: constrain(x,lBound,intensity_right_bound),
+                            y: constrain(y,tBound,bBound)
+                        };
+                        pressure_points.push(plotPoint);
+                        if(previous_pressure_point)
+                            pressure_segments.push([previous_pressure_point,plotPoint]);
+                        previous_pressure_point = plotPoint;
+                    }
+                    stroke(pressure_color);
+                    strokeWeight(2);
+                    noFill();
+                    for(let segment of pressure_segments)
+                        line(segment[0].x,segment[0].y,segment[1].x,segment[1].y);
+                    strokeWeight(5);
+                    for(let plotPoint of pressure_points)
+                        point(plotPoint.x,plotPoint.y);
                 }
                 strokeWeight(1);
             }else{
