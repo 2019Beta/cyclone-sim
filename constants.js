@@ -278,7 +278,7 @@ const EYE_TYPE_COUNT = 5;
 const EYE_TYPE_DEFS = Object.freeze([
     Object.freeze({
         key: 'pinhole',
-        label: 'Pinhole eye (\u9488\u773c)',
+        label: 'Pinhole eye',
         diameterMin: 3,
         diameterMax: 10,
         diameterLabel: '<10 nmi',
@@ -291,7 +291,7 @@ const EYE_TYPE_DEFS = Object.freeze([
     }),
     Object.freeze({
         key: 'small',
-        label: 'Small eye (\u5c0f\u773c)',
+        label: 'Small eye',
         diameterMin: 10,
         diameterMax: 20,
         diameterLabel: '10-20 nmi',
@@ -303,7 +303,7 @@ const EYE_TYPE_DEFS = Object.freeze([
     }),
     Object.freeze({
         key: 'medium',
-        label: 'Medium eye (\u4e2d\u773c)',
+        label: 'Medium eye',
         diameterMin: 20,
         diameterMax: 40,
         diameterLabel: '20-40 nmi',
@@ -315,7 +315,7 @@ const EYE_TYPE_DEFS = Object.freeze([
     }),
     Object.freeze({
         key: 'large',
-        label: 'Large eye (\u5927\u773c)',
+        label: 'Large eye',
         diameterMin: 40,
         diameterMax: 80,
         diameterLabel: '40-80 nmi',
@@ -327,7 +327,7 @@ const EYE_TYPE_DEFS = Object.freeze([
     }),
     Object.freeze({
         key: 'giant',
-        label: 'Giant eye (\u5de8\u773c)',
+        label: 'Giant eye',
         diameterMin: 80,
         diameterMax: 120,
         diameterLabel: '80-120 nmi',
