@@ -237,19 +237,38 @@ class Storm{
         return previous.pressure-data.pressure>=threshold;
     }
 
-    getWindRadii(data,previousData,motionTicks=ADVISORY_TICKS){
-        if(!(data instanceof StormData) || !Number.isInteger(data.type) || data.type<0 || data.type>=STORM_TYPES) return [];
+    getWindFieldContext(tick,data){
+        if(!(data instanceof StormData))
+            data = this.getStormDataByTick(tick,true);
+        if(!(data instanceof StormData)) return null;
 
-        let previousX = previousData instanceof StormData ? previousData.pos.x : undefined;
-        let previousY = previousData instanceof StormData ? previousData.pos.y : undefined;
-        let cacheKey = [data.pos.x,data.pos.y,data.pressure,data.windSpeed,data.type,
-            data.radiusOfMaxWind,previousX,previousY,motionTicks];
-        let cached = this.windRadiiCache;
-        if(cached && cached.key.every((value,index)=>value===cacheKey[index]))
-            return cached.value;
+        let previousData;
+        let motionTicks = ADVISORY_TICKS;
+        if(tick===this.basin.tick && this.current){
+            let previousIndex = this.record.length-1;
+            if(tick%ADVISORY_TICKS===0) previousIndex--;
+            if(previousIndex>=0){
+                previousData = this.record[previousIndex];
+                motionTicks = tick-this.get_tick_from_record_index(previousIndex);
+            }
+        }else{
+            let index = floor(tick/ADVISORY_TICKS)-ceil(this.birthTime/ADVISORY_TICKS);
+            if(index>0 && this.record[index-1]){
+                previousData = this.record[index-1];
+                motionTicks = this.get_tick_from_record_index(index)-
+                    this.get_tick_from_record_index(index-1);
+            }
+        }
+        return {data,previousData,motionTicks};
+    }
 
-        // Convert the displacement between fixes to a storm-motion vector in
-        // knots. Screen y increases southward, so northward motion is negative y.
+    getWindFieldModel(data,previousData,motionTicks=ADVISORY_TICKS){
+        if(!(data instanceof StormData)) return null;
+
+        // Keep the continuous map wind and the reported wind-radius polygons
+        // on the same physical model. In particular, pressure breadth is part
+        // of the effective RMW; using the raw RMW here creates a tight radial
+        // bullseye in the map while the 34/50/64 kt contours sit farther out.
         let motionX = 0;
         let motionY = 0;
         if(previousData instanceof StormData){
@@ -262,9 +281,6 @@ class Storm{
             let hours = max(1,motionTicks*TICK_DURATION/3600000);
             motionX = longitudeDelta*60*Math.cos(averageLatitude*Math.PI/180)/hours;
             motionY = -(currentCoord.latitude-previousCoord.latitude)*60/hours;
-
-            // Very fast simulated systems otherwise make the idealized uniform
-            // translation dominate even infinitely far from the cyclone.
             let motionMagnitude = Math.hypot(motionX,motionY);
             if(motionMagnitude>30){
                 motionX *= 30/motionMagnitude;
@@ -275,14 +291,71 @@ class Storm{
         let maximumWind = data.windSpeed;
         let pressureDeficit = max(1,1010-data.pressure);
         let expectedDeficit = max(8,(maximumWind-25)*0.78);
-        let pressureBreadth = constrain(Math.sqrt(pressureDeficit/expectedDeficit),0.72,data.type===EXTROP ? 1.75 : 1.45);
+        let pressureBreadth = constrain(
+            Math.sqrt(pressureDeficit/expectedDeficit),
+            0.72,data.type===EXTROP ? 1.75 : 1.45
+        );
         let radiusOfMaxWind = Number.isFinite(data.radiusOfMaxWind) ?
-            data.radiusOfMaxWind : StormData.estimateRadiusOfMaxWind(data.pressure,maximumWind,data.type);
-        let effectiveInnerRadius = radiusOfMaxWind*pressureBreadth*(data.type===MONSOON ? 1.4 : data.type===EXTROP ? 1.18 : 1);
-        let decayExponent = constrain((data.type===EXTROP ? 0.54 : 0.62)/pressureBreadth,0.34,0.78);
+            data.radiusOfMaxWind : StormData.estimateRadiusOfMaxWind(
+                data.pressure,maximumWind,data.type
+            );
+        let typeFactor = data.type===MONSOON ? 1.4 :
+            data.type===EXTROP ? 1.18 : 1;
+        let effectiveInnerRadius = radiusOfMaxWind*pressureBreadth*typeFactor;
+        let decayExponent = constrain(
+            (data.type===EXTROP ? 0.54 : 0.62)/pressureBreadth,
+            0.34,0.78
+        );
+        let circulationDirection = this.basin.SHem ? -1 : 1;
+        let radiusFactor = angle=>{
+            // One shared low-frequency sector shape keeps the color field
+            // from becoming a stack of perfect circles, while using the same
+            // shape for all thresholds keeps it aligned with the wind rings.
+            let smoothAmplitude = data.type===MONSOON ? 0.19 :
+                data.type===EXTROP ? 0.17 : 0.13;
+            let phase = data.pos.x*0.035+data.pos.y*0.021;
+            let sectorShape = 0.70*Math.sin(phase+angle*2)+
+                0.20*Math.cos(phase*0.71-angle)+
+                0.10*Math.sin(phase*1.37+angle*3);
+            let smoothBias = smoothAmplitude*sectorShape;
+            return constrain(
+                1+smoothBias,
+                data.type===MONSOON ? 0.72 : data.type===EXTROP ? 0.76 : 0.80,
+                data.type===MONSOON ? 1.28 : data.type===EXTROP ? 1.24 : 1.20
+            );
+        };
+
+        return {
+            maximumWind,
+            motionX,
+            motionY,
+            pressureBreadth,
+            effectiveInnerRadius,
+            decayExponent,
+            circulationDirection,
+            radiusFactor
+        };
+    }
+
+    getWindRadii(data,previousData,motionTicks=ADVISORY_TICKS){
+        if(!(data instanceof StormData) || !Number.isInteger(data.type) || data.type<0 || data.type>=STORM_TYPES) return [];
+
+        let previousX = previousData instanceof StormData ? previousData.pos.x : undefined;
+        let previousY = previousData instanceof StormData ? previousData.pos.y : undefined;
+        let cacheKey = [data.pos.x,data.pos.y,data.pressure,data.windSpeed,data.type,
+            data.radiusOfMaxWind,previousX,previousY,motionTicks];
+        let cached = this.windRadiiCache;
+        if(cached && cached.key.every((value,index)=>value===cacheKey[index]))
+            return cached.value;
+
+        let model = this.getWindFieldModel(data,previousData,motionTicks);
+        if(!model) return [];
+        let {
+            maximumWind,motionX,motionY,effectiveInnerRadius,decayExponent,
+            circulationDirection,radiusFactor
+        } = model;
         let configs = WIND_RADIUS_CONFIGS;
         let sampleCount = WIND_RADIUS_SAMPLE_COUNT;
-        let circulationDirection = this.basin.SHem ? -1 : 1;
         let motionMagnitudeSq = sq(motionX)+sq(motionY);
 
         let result = [];
@@ -313,9 +386,7 @@ class Storm{
                     radius = effectiveInnerRadius*pow(maximumWind/max(1,requiredCycloneWind),1/decayExponent);
                     hasThresholdWind = true;
                 }
-                let smoothAmplitude = data.type===MONSOON ? 0.17-level*0.02 : data.type===EXTROP ? 0.15-level*0.018 : 0.09-level*0.015;
-                let smoothBias = smoothAmplitude*Math.sin(data.pos.x*0.035+data.pos.y*0.021+angle*2+level*0.83);
-                let factor = constrain(1+smoothBias,data.type===MONSOON ? 0.72 : data.type===EXTROP ? 0.76 : 0.84,data.type===MONSOON ? 1.28 : data.type===EXTROP ? 1.24 : 1.16);
+                let factor = radiusFactor(angle);
                 radius *= factor;
                 if(radius>config.softLimit)
                     radius = config.softLimit*(1+0.35*Math.log(radius/config.softLimit));
@@ -458,22 +529,9 @@ class Storm{
         let data = this.getStormDataByTick(viewTick,true);
         if(!(data instanceof StormData)) return;
 
-        let previousData;
-        let motionTicks = ADVISORY_TICKS;
-        if(viewTick===this.basin.tick && this.current){
-            let previousIndex = this.record.length-1;
-            if(viewTick%ADVISORY_TICKS===0) previousIndex--;
-            if(previousIndex>=0){
-                previousData = this.record[previousIndex];
-                motionTicks = viewTick-this.get_tick_from_record_index(previousIndex);
-            }
-        }else{
-            let index = floor(viewTick/ADVISORY_TICKS)-ceil(this.birthTime/ADVISORY_TICKS);
-            if(index>0){
-                previousData = this.record[index-1];
-                motionTicks = this.get_tick_from_record_index(index)-this.get_tick_from_record_index(index-1);
-            }
-        }
+        let context = this.getWindFieldContext(viewTick,data);
+        let previousData = context ? context.previousData : undefined;
+        let motionTicks = context ? context.motionTicks : ADVISORY_TICKS;
 
         let radii = this.getWindRadii(data,previousData,motionTicks);
         if(radii.length<1) return;
@@ -497,7 +555,10 @@ class Storm{
             simSettings.windFieldStyle : WIND_FIELD_STYLE_NHC;
 
         windFields.push();
-        windFields.translate(data.pos.x,data.pos.y);
+        // Environment fields use hemisphere-normalized coordinates. Use the
+        // same center here so Southern Hemisphere wind rings do not mirror
+        // away from the color field.
+        windFields.translate(data.pos.x,this.basin.hemY(data.pos.y));
         windFields.strokeWeight(1.5);
         if(fieldStyle===WIND_FIELD_STYLE_JMA){
             // JMA represents the wind field with one outer (34 kt) circle and
@@ -702,12 +763,23 @@ class Storm{
                 forecastTracks.clear();
                 const points = this.current.trackForecast;
                 let p0;
-                let p1 = this.record[this.record.length - 1].pos;
+                // A newly spawned live system can be selected before its first
+                // advisory is recorded. In that state `record` is empty, so
+                // there is no historical point to seed the forecast from.
+                // Use the live position instead and wait quietly if the
+                // forecast ensemble has not produced any points yet.
+                let lastRecord = this.record.length>0 ?
+                    this.record[this.record.length-1] : undefined;
+                let p1 = lastRecord && lastRecord.pos ? lastRecord.pos :
+                    this.current.pos;
+                if(!p1 || !(points instanceof Array) || points.length===0)
+                    return;
                 let rVec = createVector(0);
                 let r0 = 0;
                 let r1 = 0.01;
                 for(let hour of [12, 24, 36, 48, 60, 72, 96, 120]){
                     const n = hour / ADVISORY_TICKS - 1;
+                    if(!points[n]) break;
                     r0 = r1;
                     r1 = hour * 0.7 / 2;
                     p0 = p1;
@@ -1193,14 +1265,16 @@ class StormRef{
 }
 
 class StormData{
-    constructor(basin,x,y,p,w,t,radiusOfMaxWind,circulationSize){
+    constructor(basin,x,y,p,w,t,radiusOfMaxWind,circulationSize,eyeType,eyeDiameter){
         if(basin instanceof Basin) this.basin = basin;
         this.pos = undefined;
         this.pressure = undefined;
         this.windSpeed = undefined; // in knots
         this.type = undefined;
         this.radiusOfMaxWind = undefined; // nautical miles
-        this.circulationSize = undefined; // structural size level: 1 (small) to 5 (large)
+        this.circulationSize = undefined; // structural size level: 0 (TINY) to 6 (HUGE), with 1-5 as the standard levels
+        this.eyeType = EYE_TYPE_MEDIUM;
+        this.eyeDiameter = undefined; // nautical miles; clear-eye diameter
         if(x instanceof LoadData){
             this.load(x,y);
         }else{
@@ -1213,6 +1287,14 @@ class StormData{
             this.circulationSize = StormData.constrainCirculationSize(
                 circulationSize===undefined ? StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type) : circulationSize
             );
+            let resolvedEyeType = Number.isFinite(eyeType) ? eyeType :
+                Number.isFinite(eyeDiameter) ? StormData.eyeTypeForDiameter(eyeDiameter) :
+                    EYE_TYPE_MEDIUM;
+            this.eyeType = StormData.constrainEyeType(resolvedEyeType);
+            this.eyeDiameter = StormData.constrainEyeDiameter(
+                eyeDiameter,
+                this.eyeType
+            );
         }
     }
 
@@ -1221,17 +1303,108 @@ class StormData{
     }
 
     static constrainCirculationSize(level){
-        return constrain(round(Number.isFinite(level) ? level : 3),1,5);
+        return constrain(round(Number.isFinite(level) ? level : 3),0,6);
+    }
+
+    static constrainEyeType(type){
+        return constrain(round(Number.isFinite(type) ? type : EYE_TYPE_MEDIUM),0,EYE_TYPE_COUNT-1);
+    }
+
+    static eyeTypeProfile(type){
+        return EYE_TYPE_DEFS[StormData.constrainEyeType(type)];
+    }
+
+    static eyeTypeLabel(type){
+        return StormData.eyeTypeProfile(type).label;
+    }
+
+    static eyeTypeDiameterLabel(type){
+        return StormData.eyeTypeProfile(type).diameterLabel;
+    }
+
+    static eyeTypeForDiameter(diameter){
+        if(!Number.isFinite(diameter)) return EYE_TYPE_MEDIUM;
+        for(let i=0;i<EYE_TYPE_DEFS.length;i++){
+            if(diameter<EYE_TYPE_DEFS[i].diameterMax || i===EYE_TYPE_DEFS.length-1)
+                return i;
+        }
+        return EYE_TYPE_GIANT;
+    }
+
+    static defaultEyeDiameter(type){
+        return StormData.eyeTypeProfile(type).typicalDiameter;
+    }
+
+    static constrainEyeDiameter(diameter,type){
+        let profile = StormData.eyeTypeProfile(type);
+        return constrain(
+            Number.isFinite(diameter) ? diameter : profile.typicalDiameter,
+            profile.diameterMin,
+            profile.diameterMax
+        );
+    }
+
+    static randomEyeType(windSpeed){
+        // Medium eyes remain the climatological default. Compact eyes become
+        // more common in already-developed systems, reflecting their link to
+        // rapid intensification without making every major cyclone pinhole-
+        // sized. The returned type is a persistent storm characteristic.
+        let maturity = constrain(
+            (Number.isFinite(windSpeed) ? windSpeed : 30)-34,
+            0,100
+        )/100;
+        let weights = [
+            0.08+0.10*maturity,
+            0.17+0.07*maturity,
+            0.48-0.04*maturity,
+            0.22-0.11*maturity,
+            0.05-0.02*maturity
+        ];
+        let roll = typeof random==='function' ? random() : 0.5;
+        for(let i=0;i<weights.length;i++){
+            if(roll<weights[i]) return i;
+            roll -= weights[i];
+        }
+        return EYE_TYPE_MEDIUM;
+    }
+
+    static randomEyeDiameter(type){
+        let profile = StormData.eyeTypeProfile(type);
+        return typeof random==='function' ?
+            random(profile.diameterMin,profile.diameterMax) :
+            profile.typicalDiameter;
+    }
+
+    static circulationSizeLabel(level){
+        level = StormData.constrainCirculationSize(level);
+        if(level<1) return 'TINY (<1)';
+        if(level>5) return 'HUGE (>5)';
+        return 'Level ' + level + ' / 5';
+    }
+
+    static randomCirculationSize(){
+        let outlierRoll = random();
+        if(outlierRoll<0.03) return 0;
+        if(outlierRoll>0.97) return 6;
+        return floor(random(1,6));
     }
 
     static radiusToCirculationSize(radius,type){
         let bounds = StormData.radiusBounds(type);
-        return StormData.constrainCirculationSize(map(radius,bounds[0],bounds[1],1,5,true));
+        let level = map(radius,bounds[0],bounds[1],1,5);
+        // Radii outside the five standard levels are retained as the two
+        // named structural outliers instead of being folded into level 1/5.
+        if(level<1) return 0;
+        if(level>5) return 6;
+        return StormData.constrainCirculationSize(level);
     }
 
     static circulationSizeToRadius(level,type){
         let bounds = StormData.radiusBounds(type);
-        return map(StormData.constrainCirculationSize(level),1,5,bounds[0],bounds[1]);
+        level = StormData.constrainCirculationSize(level);
+        if(level<1) return map(level,0,1,bounds[0]*0.5,bounds[0]);
+        if(level>5) return map(level,5,6,bounds[1],bounds[1]*1.5);
+        return map(level,1,5,bounds[0],bounds[1]);
     }
 
     static estimateRadiusOfMaxWind(p,w,t){
@@ -1247,7 +1420,7 @@ class StormData{
 
     static constrainRadiusOfMaxWind(radius,type){
         let bounds = StormData.radiusBounds(type);
-        return constrain(radius,bounds[0],bounds[1]);
+        return constrain(radius,bounds[0]*0.5,bounds[1]*1.5);
     }
 
     static minimumCenterSeparation(system0,system1){
@@ -1275,7 +1448,7 @@ class StormData{
         let obj = {};
         let {longitude, latitude} = this.coord();
         obj.pos = {longitude, latitude};
-        for(let p of ['pressure','windSpeed','type','radiusOfMaxWind','circulationSize']) obj[p] = this[p];
+        for(let p of ['pressure','windSpeed','type','radiusOfMaxWind','circulationSize','eyeType','eyeDiameter']) obj[p] = this[p];
         return obj;
     }
 
@@ -1293,6 +1466,14 @@ class StormData{
                 this.circulationSize = StormData.constrainCirculationSize(
                     obj.circulationSize===undefined ? StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type) : obj.circulationSize
                 );
+                this.eyeType = StormData.constrainEyeType(
+                    obj.eyeType===undefined ?
+                        StormData.eyeTypeForDiameter(obj.eyeDiameter) : obj.eyeType
+                );
+                this.eyeDiameter = StormData.constrainEyeDiameter(
+                    obj.eyeDiameter,
+                    this.eyeType
+                );
             }else{
                 let str = data.value;
                 let arr = decodeB36StringArray(str);
@@ -1301,6 +1482,8 @@ class StormData{
                 this.pressure = arr.pop();
                 this.radiusOfMaxWind = StormData.estimateRadiusOfMaxWind(this.pressure,this.windSpeed,this.type);
                 this.circulationSize = StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type);
+                this.eyeType = EYE_TYPE_MEDIUM;
+                this.eyeDiameter = StormData.defaultEyeDiameter(this.eyeType);
                 if(posInArr) this.pos = posInArr;
                 else{
                     let opts = {
@@ -1320,6 +1503,8 @@ class StormData{
         let type = [];
         let radiusOfMaxWind = [];
         let circulationSize = [];
+        let eyeType = [];
+        let eyeDiameter = [];
         for(let d of arr){
             if(d instanceof StormData){
                 let coord = d.coord();
@@ -1330,6 +1515,8 @@ class StormData{
                 type.push(d.type);
                 radiusOfMaxWind.push(d.radiusOfMaxWind);
                 circulationSize.push(StormData.constrainCirculationSize(d.circulationSize));
+                eyeType.push(StormData.constrainEyeType(d.eyeType));
+                eyeDiameter.push(StormData.constrainEyeDiameter(d.eyeDiameter,d.eyeType));
             }
         }
         let obj = {};
@@ -1339,6 +1526,8 @@ class StormData{
         obj.type = new Uint8ClampedArray(type);
         obj.radiusOfMaxWind = new Float32Array(radiusOfMaxWind);
         obj.circulationSize = new Uint8ClampedArray(circulationSize);
+        obj.eyeType = new Uint8ClampedArray(eyeType);
+        obj.eyeDiameter = new Float32Array(eyeDiameter);
         return obj;
     }
 
@@ -1367,11 +1556,15 @@ class StormData{
                 let type = [...obj.type];
                 let radiusOfMaxWind = obj.radiusOfMaxWind ? [...obj.radiusOfMaxWind] : undefined;
                 let circulationSize = obj.circulationSize ? [...obj.circulationSize] : undefined;
+                let eyeType = obj.eyeType ? [...obj.eyeType] : undefined;
+                let eyeDiameter = obj.eyeDiameter ? [...obj.eyeDiameter] : undefined;
                 for(let i=0;i<x.length;i++){
                     arr[i] = new StormData(
                         basin,x[i],y[i],pressure[i],windSpeed[i],type[i],
                         radiusOfMaxWind ? radiusOfMaxWind[i] : undefined,
-                        circulationSize ? circulationSize[i] : undefined
+                        circulationSize ? circulationSize[i] : undefined,
+                        eyeType ? eyeType[i] : undefined,
+                        eyeDiameter ? eyeDiameter[i] : undefined
                     );
                 }
                 return arr;
@@ -1474,6 +1667,45 @@ class ActiveSystem extends StormData{
         //     this.depth = ext ? 1 : 0;
         // }
         super(basin);
+        // Eyewall replacement is live simulation state only. It deliberately
+        // is not part of StormData/advisory persistence.
+        this.eyewallCycle = 0;
+        // A completed replacement leaves a slightly larger, new eye instead
+        // of restoring the pre-cycle size. This live-only memory is separate
+        // from the active cycle phase and is not written to saves/advisories.
+        this.eyewallReplacementMemory = 0;
+        // The completed outer wall takes time to become the sole dominant
+        // signature in derived imagery. This handoff is live-only and decays
+        // after the physical replacement has already completed.
+        this.eyewallReplacementHandoff = 0;
+        // A failed replacement produces a short-lived structural event. The
+        // event is live-only and decays after it has altered the eyewall.
+        this.eyewallFailureEvent = 0;
+        this.eyewallFailureEventMode = 0;
+        this.eyewallFailureEventDuration = 18;
+        // Landfall damage to the lower warm core fades gradually after the
+        // storm returns over water. This is live-only state, like the eyewall
+        // cycle, and is intentionally not written into advisories or saves.
+        this.landWarmCoreDamage = 0;
+        // Instantaneous land interaction (direct crossing or a weaker
+        // peripheral brush). It is refreshed by the core algorithm each hour
+        // and is deliberately not part of StormData/advisory persistence.
+        this.landExposure = 0;
+        // Deep convection has its own short-lived state instead of being
+        // derived directly from wind speed. It is intentionally live-only;
+        // the storm algorithm re-seeds it from the current structure when an
+        // older save is loaded.
+        this.convectiveActivity = undefined;
+        // Rainbands are also live-only derived structure. Keeping their
+        // activity separate from the imagery renderer means eyewall
+        // replacement can be judged while no storm is selected.
+        this.rainbandActivity = undefined;
+        this.rainbandFormation = undefined;
+        // A trough-phasing pulse is derived from the recent upper-level
+        // outflow trend. It is live-only so saved advisories keep the physical
+        // storm state while a reloaded storm can re-evaluate its environment.
+        this.troughOutflowMemory = 0;
+        this.troughOutflowBurst = 0;
         this.steering = createVector(0); // A vector that updates with the environmental steering
         this.interaction = {}; // Data for interaction with other storms (e.g. Fujiwhara)
         this.resetInteraction();
@@ -1485,6 +1717,18 @@ class ActiveSystem extends StormData{
         if(data instanceof LoadData){
             this.storm = undefined;
             this.load(data);
+            // Older saves have no eye metadata. Give them the neutral middle
+            // category and keep any stored diameter inside that category's
+            // observed range.
+            this.eyeType = StormData.constrainEyeType(this.eyeType);
+            this.eyeDiameter = StormData.constrainEyeDiameter(
+                this.eyeDiameter,
+                this.eyeType
+            );
+            this.eyeDiameterBase = StormData.constrainEyeDiameter(
+                Number.isFinite(this.eyeDiameterBase) ? this.eyeDiameterBase : this.eyeDiameter,
+                this.eyeType
+            );
         }else{
             let d = data || {};
             if(d.x instanceof Function || d.y instanceof Function){
@@ -1524,14 +1768,33 @@ class ActiveSystem extends StormData{
                 StormData.constrainRadiusOfMaxWind(d.radiusOfMaxWind,this.type) : estimatedRadius;
             this.circulationSize = StormData.constrainCirculationSize(
                 d.circulationSize===undefined ?
-                    hasExplicitRadius ? StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type) : floor(random(1,6)) :
+                    hasExplicitRadius ? StormData.radiusToCirculationSize(this.radiusOfMaxWind,this.type) : StormData.randomCirculationSize() :
                     d.circulationSize
             );
             this.radiusOfMaxWind = StormData.circulationSizeToRadius(this.circulationSize,this.type);
+            let resolvedEyeType = Number.isFinite(d.eyeType) ? d.eyeType :
+                Number.isFinite(d.eyeDiameter) ? StormData.eyeTypeForDiameter(d.eyeDiameter) :
+                    StormData.randomEyeType(this.windSpeed);
+            this.eyeType = StormData.constrainEyeType(resolvedEyeType);
+            this.eyeDiameter = StormData.constrainEyeDiameter(
+                Number.isFinite(d.eyeDiameter) ? d.eyeDiameter :
+                    StormData.randomEyeDiameter(this.eyeType),
+                this.eyeType
+            );
+            this.eyeDiameterBase = StormData.constrainEyeDiameter(
+                Number.isFinite(d.eyeDiameterBase) ? d.eyeDiameterBase : this.eyeDiameter,
+                this.eyeType
+            );
             if(!hasExplicitRadius){
                 let sizeRatio = constrain(this.radiusOfMaxWind/estimatedRadius,0.82,1.18);
                 this.pressure = 1010-(1010-this.pressure)*sizeRatio;
             }
+            if(Number.isFinite(d.convectiveActivity))
+                this.convectiveActivity = constrain(d.convectiveActivity,0,1);
+            if(Number.isFinite(d.rainbandActivity))
+                this.rainbandActivity = constrain(d.rainbandActivity,0,1);
+            if(Number.isFinite(d.rainbandFormation))
+                this.rainbandFormation = constrain(d.rainbandFormation,0,1);
             let activeAttribs = ACTIVE_ATTRIBS[basin.actMode] || ACTIVE_ATTRIBS.defaults;
             for(let v of activeAttribs)
                 this[v] = d[v] || 0;
@@ -1574,6 +1837,11 @@ class ActiveSystem extends StormData{
             STORM_ALGORITHM[basin.actMode].typeDetermination(this,u);
         else
             STORM_ALGORITHM.defaults.typeDetermination(this,u);
+
+        // The clear eye responds to the final intensity/type state for this
+        // hourly step. Keep this separate from the broader RMW update: a
+        // storm can tighten its eye without collapsing its whole circulation.
+        if(typeof updateEyeDiameter==='function') updateEyeDiameter(this);
         
         let x = this.pos.x;
         let y = this.pos.y;
@@ -1686,7 +1954,8 @@ class ActiveSystem extends StormData{
                 // position for the wind field.
                 impactData = new StormData(
                     basin,this.pos.x,this.pos.y,this.pressure,this.windSpeed,
-                    impactType,this.radiusOfMaxWind,this.circulationSize
+                    impactType,this.radiusOfMaxWind,this.circulationSize,
+                    this.eyeType,this.eyeDiameter
                 );
             }
             let impact = currentStorm.getWindImpact(impactData,previousAdvisory,motionTicks);
@@ -1738,7 +2007,10 @@ class ActiveSystem extends StormData{
         let p = floor(this.pressure);
         let w = round(this.windSpeed/WINDSPEED_ROUNDING)*WINDSPEED_ROUNDING;
         let ty = this.type;
-        let adv = new StormData(this.basin,x,y,p,w,ty,this.radiusOfMaxWind,this.circulationSize);
+        let adv = new StormData(
+            this.basin,x,y,p,w,ty,this.radiusOfMaxWind,this.circulationSize,
+            this.eyeType,this.eyeDiameter
+        );
         this.fetchStorm().updateStats(adv);
         this.fetchStorm().record.push(adv);
         // this.fetchStorm().renderTrack(true);
@@ -1875,6 +2147,11 @@ class ActiveSystem extends StormData{
 
     save(){
         let obj = super.save();
+        // Preserve the uncontracted reference diameter separately from the
+        // current clear-eye diameter so a saved storm can reopen its eye when
+        // it weakens later. Older saves simply fall back to the current value.
+        obj.eyeDiameterBase = Number.isFinite(this.eyeDiameterBase) ?
+            this.eyeDiameterBase : this.eyeDiameter;
         let activeAttribs = ACTIVE_ATTRIBS[this.basin.actMode] || ACTIVE_ATTRIBS.defaults;
         for(let p of activeAttribs)
             obj[p] = this[p];
@@ -1890,6 +2167,8 @@ class ActiveSystem extends StormData{
             if(data.format>=FORMAT_WITH_INDEXEDDB){
                 let obj = data.value;
                 super.load(data);
+                this.eyeDiameterBase = Number.isFinite(obj.eyeDiameterBase) ?
+                    obj.eyeDiameterBase : this.eyeDiameter;
                 algorithmVersion = obj.algorithmVersion || 0;
                 if(algorithmVersion < STORM_ALGORITHM[this.basin.actMode].version && STORM_ALGORITHM[this.basin.actMode].upgrade)
                     STORM_ALGORITHM[this.basin.actMode].upgrade(this,obj,algorithmVersion); // upgrade active attributes in case of an algorithm version change

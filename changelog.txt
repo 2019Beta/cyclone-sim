@@ -1,5 +1,20 @@
 About: A p5.js tropical cyclone simulation game
 
+v0.34 (2026-09-23):
+    + Added five tropical-cyclone eye types, from pinhole to giant
+        > Typical diameters range from under 10 nmi to 80-120 nmi
+        > Eye type is shown in storm information and influences inner-core evolution
+        > Compact eyes support faster intensification and modestly higher pressure and wind potential
+    + Improved eye contraction and eyewall replacement
+        > Mature storms can contract their eyes while retaining a visible minimum
+        > Rainbands evolve on all active cyclones and can trigger eyewall replacement
+        > Replacement growth stays bounded; successful cycles hand off to the outer wall, while failed cycles can retain nested walls or wall gaps
+    + Added an aircraft reconnaissance view for the selected active cyclone
+        > Shows the flight track, center fix, dropsonde releases, wind profiles, and wind and pressure transects
+    * Improved cyclone imagery and simulated eye brightness temperature
+        > Compact cyclones receive a closer imagery crop, and eye-type labels render correctly
+        > Eye brightness temperature follows the local SST-based clear-sky window with an empirical 28 °C ceiling across IR, IR-BD, and Polar HD products
+
 v0.4.33 (2026-08-31):
     + Added JTWC,JMA style wind field styles
     + Wind fields are disabled by default in new settings

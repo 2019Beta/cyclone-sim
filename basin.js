@@ -110,7 +110,9 @@ class Basin{
         viewTick = this.tick;
         UI.viewBasin = this;
         clearObservationBuoy(false);
+        if(typeof clearAircraftRecon==='function') clearAircraftRecon();
         selectedStorm = undefined;
+        if(typeof updateStormImageryPanel==='function') updateStormImageryPanel();
         paused = this.tick!==0;
         lastUpdateTimestamp = performance.now();
         refreshTracks(true);

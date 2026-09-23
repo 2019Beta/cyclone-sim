@@ -166,6 +166,13 @@ class EnvField{
         this.isVectorField = attribs.vector;
         this.vectorColorFill = attribs.vectorColorFill;
         this.fillResolution = attribs.fillResolution || 8;
+        // Scalar fields normally render in ENV_LAYER_TILE_SIZE blocks. A
+        // field-specific resolution keeps detailed overlays such as the
+        // simulated scan from forcing every environmental layer to use a
+        // smaller (and more expensive) grid.
+        this.renderResolution = attribs.renderResolution || ENV_LAYER_TILE_SIZE;
+        this.smoothRaster = !!attribs.smoothRaster;
+        this.pixelatedRaster = !!attribs.pixelatedRaster;
         this.fillAlpha = attribs.fillAlpha===undefined ? 255 : attribs.fillAlpha;
         this.noVectorFlip = attribs.noVectorFlip;   // do not reflect the output vector over the y-axis in the southern hemisphere if this is true
         this.noWobble = attribs.noWobble;
@@ -191,6 +198,7 @@ class EnvField{
         this.contourInterval = attribs.contourInterval;
         this.contourGridSize = attribs.contourGridSize || ENV_LAYER_TILE_SIZE;
         this.contourLabelInterval = attribs.contourLabelInterval || this.contourInterval;
+        this.legend = attribs.legend;
         this.modifiers = attribs.modifiers;
         if(this.isVectorField) this.vec = createVector();
         if(attribs.mapFunc instanceof Function) this.mapFunc = attribs.mapFunc;
@@ -285,6 +293,11 @@ class EnvField{
 
     render(){
         envLayer.noFill();
+        if(this.smoothRaster){
+            this.renderScalarRaster();
+            if(simSettings.showMagGlass) this.renderMagGlass();
+            return;
+        }
         if(this.contourInterval){
             this.renderContours();
             if(simSettings.showMagGlass) this.renderMagGlass();
@@ -295,11 +308,12 @@ class EnvField{
             if(simSettings.showMagGlass) this.renderMagGlass();
             return;
         }
-        let tileSize = ceil(ENV_LAYER_TILE_SIZE*scaler);
-        for(let i=0;i<WIDTH;i+=ENV_LAYER_TILE_SIZE){
-            for(let j=0;j<HEIGHT;j+=ENV_LAYER_TILE_SIZE){
-                let x = i+ENV_LAYER_TILE_SIZE/2;
-                let y = j+ENV_LAYER_TILE_SIZE/2;
+        let resolution = this.renderResolution;
+        let tileSize = ceil(resolution*scaler);
+        for(let i=0;i<WIDTH;i+=resolution){
+            for(let j=0;j<HEIGHT;j+=resolution){
+                let x = i+resolution/2;
+                let y = j+resolution/2;
                 if(!this.oceanic || land.tileContainsOcean(x,y)){
                     let v = this.get(x,y,viewTick);
                     if(this.isVectorField){
@@ -347,6 +361,34 @@ class EnvField{
             }
         }
         if(simSettings.showMagGlass) this.renderMagGlass();
+    }
+
+    renderScalarRaster(){
+        let resolution = this.renderResolution;
+        let width = ceil(WIDTH/resolution)+1;
+        let height = ceil(HEIGHT/resolution)+1;
+        let raster = createImage(width,height);
+        raster.loadPixels();
+        for(let row=0;row<height;row++){
+            for(let col=0;col<width;col++){
+                let value = this.get(min(WIDTH-1,col*resolution),min(HEIGHT-1,row*resolution),viewTick);
+                let c = value===null ? color(128,128,128) : this.hueMap(value);
+                let index = 4*(row*width+col);
+                raster.pixels[index] = red(c);
+                raster.pixels[index+1] = green(c);
+                raster.pixels[index+2] = blue(c);
+                raster.pixels[index+3] = alpha(c);
+            }
+        }
+        raster.updatePixels();
+        envLayer.push();
+        let smoothing = envLayer.drawingContext.imageSmoothingEnabled;
+        envLayer.drawingContext.imageSmoothingEnabled = !this.pixelatedRaster;
+        // Align sample centers with map coordinates, including the edge samples.
+        envLayer.image(raster,-resolution*scaler/2,-resolution*scaler/2,
+            width*resolution*scaler,height*resolution*scaler);
+        envLayer.drawingContext.imageSmoothingEnabled = smoothing;
+        envLayer.pop();
     }
 
     renderVectorColorFill(){
@@ -609,6 +651,8 @@ class Environment{  // Environmental fields that determine storm strength and st
         this.layerIsVector = false;
         this.pressureCacheKey = undefined;
         this.pressureSystems = [];
+        this.baseScanCacheKey = undefined;
+        this.baseScanSystems = [];
         this.queryCacheDepth = 0;
         this.queryCache = undefined;
     }
@@ -635,21 +679,27 @@ class Environment{  // Environmental fields that determine storm strength and st
         return 1016+subpolarLow+subtropicalHigh+equatorialLow+wave;
     }
 
-    getPressureSystems(z){
+    getPressureSystems(z,targetStorm){
         let basin = this.basin;
-        let cacheKey = z + ':' + (z===basin.tick ? basin.activeSystems.length : basin.getSeason(z));
+        let targetKey = targetStorm instanceof Storm ? ':' + targetStorm.id : '';
+        let cacheKey = z + ':' + (z===basin.tick ? basin.activeSystems.length : basin.getSeason(z)) + targetKey;
         if(this.pressureCacheKey===cacheKey) return this.pressureSystems;
 
         let stormData = [];
         if(z===basin.tick){
-            for(let system of basin.activeSystems) stormData.push(system);
+            for(let system of basin.activeSystems){
+                let storm = system.fetchStorm();
+                if(targetStorm instanceof Storm && storm!==targetStorm) continue;
+                stormData.push({data:system,storm});
+            }
         }else{
             let season = basin.fetchSeason(z,true,true);
             if(season){
                 for(let storm of season.forSystems(true)){
+                    if(targetStorm instanceof Storm && storm!==targetStorm) continue;
                     if(storm.aliveAt(z)){
                         let data = storm.getStormDataByTick(z,true);
-                        if(data) stormData.push(data);
+                        if(data) stormData.push({data,storm});
                     }
                 }
             }
@@ -663,7 +713,8 @@ class Environment{  // Environmental fields that determine storm strength and st
         let longitudeScale = WIDTH/longitudeSpan;
         let latitudeScale = HEIGHT/latitudeSpan;
         let result = [];
-        for(let data of stormData){
+        for(let entry of stormData){
+            let {data,storm} = entry;
             if(!Number.isFinite(data.pressure) || !data.pos) continue;
             let wind = Number.isFinite(data.windSpeed) ? data.windSpeed : 30;
             let radius = Number.isFinite(data.radiusOfMaxWind) ?
@@ -671,6 +722,16 @@ class Environment{  // Environmental fields that determine storm strength and st
             let latitude = data.coord().latitude;
             let latitudeCosine = max(0.25,Math.cos(latitude*Math.PI/180));
             let y = basin.hemY(data.pos.y);
+            let windContext = storm &&
+                typeof storm.getWindFieldContext==='function' ?
+                storm.getWindFieldContext(z,data) : null;
+            let windModel = windContext &&
+                typeof storm.getWindFieldModel==='function' ?
+                storm.getWindFieldModel(
+                    data,windContext.previousData,windContext.motionTicks
+                ) : null;
+            let landFraction = typeof land !== 'undefined' && land ?
+                land.getAtXY(data.pos.x,data.pos.y) : 0;
             let background = this.backgroundPressure(data.pos.x,y,z);
             let deficit = background-data.pressure;
             let expectedDeficit = max(8,(wind-25)*0.78);
@@ -689,13 +750,83 @@ class Environment{  // Environmental fields that determine storm strength and st
                 radius*typeFactor*pressureBreadth+intensityExpansion,
                 90,maximumSigma
             );
+            // Keep the lower-level wind retrieval supplied with the same
+            // eye-state geometry as the base-scan descriptor. These fields
+            // are derived here once per pressure-system cache, rather than
+            // rebuilding a different eye size for every SAR pixel.
+            let visualOrganization = Number.isFinite(data.organization) ?
+                constrain(data.organization,0,1) : 1;
+            let visualLowerWarmCore = Number.isFinite(data.lowerWarmCore) ?
+                constrain(data.lowerWarmCore,0,1) : 1;
+            let landDamage = Number.isFinite(data.landWarmCoreDamage) ?
+                constrain(data.landWarmCoreDamage,0,1) : 0;
+            let landMemorySuppression = 1-Math.pow(1-landDamage,1.7);
+            let landContactSuppression = landFraction>0 ?
+                0.02+0.04*landFraction : 0;
+            let visualLandSuppression = constrain(Math.max(
+                landContactSuppression,landMemorySuppression
+            ),0,1);
+            let eyeFillFactor = constrain(
+                0.58*visualLandSuppression+
+                0.24*(1-visualLowerWarmCore)+
+                0.18*(1-visualOrganization),0,1
+            );
+            let eyewallOuterRadius = typeof simulatedReplacementRadius==='function' ?
+                simulatedReplacementRadius({
+                    eyewallCycle:data.eyewallCycle,
+                    eyewallReplacementMemory:data.eyewallReplacementMemory,
+                    eyewallFailure:data.eyewallFailure,
+                    eyewallFailureEvent:data.eyewallFailureEvent
+                }) : 1.55;
             result.push({
+                storm,
+                visualSeed: (storm.birthTime || 0)*0.173+(storm.id || 0)*2.399,
                 x: data.pos.x,
                 y,
                 pressure: data.pressure,
                 windSpeed: wind,
                 radiusOfMaxWind: radius,
+                windModel,
                 type: data.type,
+                // Eye metadata is independent of the storm's circulation
+                // size. Older historical points fall back to the neutral
+                // middle-eye profile through StormData's compatibility path.
+                eyeType: Number.isFinite(data.eyeType) ?
+                    StormData.constrainEyeType(data.eyeType) : EYE_TYPE_MEDIUM,
+                eyeDiameter: StormData.constrainEyeDiameter(
+                    data.eyeDiameter,
+                    Number.isFinite(data.eyeType) ? data.eyeType : EYE_TYPE_MEDIUM
+                ),
+                circulationSize: Number.isFinite(data.circulationSize) ? data.circulationSize : 3,
+                organization: Number.isFinite(data.organization) ? constrain(data.organization,0,1) : undefined,
+                lowerWarmCore: Number.isFinite(data.lowerWarmCore) ? constrain(data.lowerWarmCore,0,1) : undefined,
+                upperWarmCore: Number.isFinite(data.upperWarmCore) ? constrain(data.upperWarmCore,0,1) : undefined,
+                depth: Number.isFinite(data.depth) ? constrain(data.depth,0,1) : undefined,
+                convectiveActivity: Number.isFinite(data.convectiveActivity) ?
+                    constrain(data.convectiveActivity,0,1) : undefined,
+                rainbandActivity: Number.isFinite(data.rainbandActivity) ?
+                    constrain(data.rainbandActivity,0,1) : undefined,
+                rainbandFormation: Number.isFinite(data.rainbandFormation) ?
+                    constrain(data.rainbandFormation,0,1) : undefined,
+                eyewallCycle: Number.isFinite(data.eyewallCycle) ? constrain(data.eyewallCycle,0,1) : 0,
+                eyewallReplacementHandoff: Number.isFinite(data.eyewallReplacementHandoff) ?
+                    constrain(data.eyewallReplacementHandoff,0,1) : 0,
+                cloudEyeExpansion: Number.isFinite(data.cloudEyeExpansion) ?
+                    constrain(data.cloudEyeExpansion,0,1) : 0,
+                eyewallReplacementMemory: Number.isFinite(data.eyewallReplacementMemory) ?
+                    constrain(data.eyewallReplacementMemory,0,1) : 0,
+                eyewallFailure: constrain(data.eyewallFailure || 0,0,1),
+                eyewallFailureMode: data.eyewallFailureMode || 0,
+                eyewallFailureEvent: Number.isFinite(data.eyewallFailureEvent) ?
+                    constrain(data.eyewallFailureEvent,0,1) : 0,
+                eyewallFailureEventMode: Number.isFinite(data.eyewallFailureEventMode) ?
+                    constrain(data.eyewallFailureEventMode,0,2) : 0,
+                eyewallOuterRadius,
+                eyeFillFactor,
+                hemisphere: basin.SHem ? -1 : 1,
+                landFraction,
+                landWarmCoreDamage: Number.isFinite(data.landWarmCoreDamage) ?
+                    constrain(data.landWarmCoreDamage,0,1) : 0,
                 latitudeCosine,
                 sigmaX: sigmaNm/(60*latitudeCosine)*longitudeScale,
                 sigmaY: sigmaNm/60*latitudeScale
@@ -725,7 +856,431 @@ class Environment{  // Environmental fields that determine storm strength and st
         return constrain(background+strongestAnomaly,650,1060);
     }
 
-    getSurfaceWind(x,y,z,target){
+    getBaseScanSystems(z,targetStorm){
+        // The base scan is a derived visual field. Cache the storm descriptors once
+        // per analysis time so every raster sample does not repeat map-scale,
+        // shear, moisture, and SST lookups for the same systems.
+        // A selected storm is passed through so the live imagery panel does not
+        // build descriptors for every other storm that happens to be active.
+        let pressureSystems = this.getPressureSystems(z,targetStorm);
+        let cacheKey = z + ':' + this.pressureCacheKey;
+        if(this.baseScanCacheKey===cacheKey) return this.baseScanSystems;
+
+        let mapData = MAP_TYPES[this.basin.mapType];
+        if(mapData.form!=='earth') mapData = MAP_TYPES[6];
+        let longitudeSpan = mapData.east-mapData.west;
+        if(longitudeSpan<=0) longitudeSpan += 360;
+        let latitudeSpan = abs(mapData.north-mapData.south);
+        let longitudeScale = WIDTH/longitudeSpan;
+        let latitudeScale = HEIGHT/latitudeSpan;
+        let result = [];
+
+        for(let system of pressureSystems){
+            let radius = Number.isFinite(system.radiusOfMaxWind) ? system.radiusOfMaxWind : 30;
+            let rmwX = max(2.5,radius/system.latitudeCosine*longitudeScale/60);
+            let rmwY = max(2.5,radius*latitudeScale/60);
+
+            let shear = this.get('shear',system.x,system.y,z,true);
+            let shearMagnitude = shear && shear.mag instanceof Function ? shear.mag() : 0;
+            let shearFactor = constrain(shearMagnitude/8,0,1);
+            let shearAngle = shearMagnitude>0.001 && shear.heading instanceof Function ? shear.heading() : 0;
+
+            let moisture = this.get('moisture',system.x,system.y,z,true);
+            let sst = this.get('SST',system.x,system.y,z,true);
+            if(!Number.isFinite(moisture)) moisture = 0.5;
+            if(!Number.isFinite(sst)) sst = 26;
+
+            let moistureFactor = constrain((moisture-0.35)/0.47,0,1);
+            let sstFactor = constrain((sst-24)/5,0,1);
+            // Rainband formation is more sensitive to moisture than the
+            // circulation-strength proxy. Historical points do not carry the
+            // live state, so derive a stable environmental fallback for them.
+            let moistureRainbandPotential = constrain((moisture-0.30)/0.44,0,1);
+            let rainbandActivity = Number.isFinite(system.rainbandActivity) ?
+                constrain(system.rainbandActivity,0,1) :
+                constrain(0.18+0.58*moistureRainbandPotential+
+                    0.18*constrain(system.windSpeed/100,0,1),0,1);
+            let rainbandFormation = Number.isFinite(system.rainbandFormation) ?
+                constrain(system.rainbandFormation,0,1) :
+                constrain(0.58*rainbandActivity+0.26*moistureRainbandPotential,0,1);
+            let rainbandPotential = constrain(
+                0.56*rainbandActivity+0.28*rainbandFormation+
+                0.16*moistureRainbandPotential,0,1
+            );
+            // Keep the imagery intensity proxy spread across the full
+            // tropical-cyclone range. The previous 15-115 kt / 1010-940 hPa
+            // mapping reached 1.0 around C3, making C3-C5 look like one
+            // intensity tier even though their observed wind and pressure
+            // were still changing. The input components now retain an
+            // unbounded, logarithmically compressed tail above the ordinary
+            // C5 envelope, so C6+ and hyper-intense storms continue to gain
+            // lower-tropospheric/base-scan signal instead of saturating.
+            let windIntensity = typeof extendedIntensityComponent==='function' ?
+                extendedIntensityComponent((system.windSpeed-25)/140) :
+                Math.max(0,(system.windSpeed-25)/140);
+            let pressureIntensity = typeof extendedIntensityComponent==='function' ?
+                extendedIntensityComponent((1008-system.pressure)/120) :
+                Math.max(0,(1008-system.pressure)/120);
+
+            // Active systems expose their evolving structure. Historical
+            // StormData predates these fields, so infer a conservative
+            // structure from the recorded storm type when they are absent.
+            let defaultOrganization = system.type===TROP ? 0.88 :
+                system.type===SUBTROP ? 0.58 :
+                system.type===MONSOON ? 0.34 :
+                system.type===TROPWAVE ? 0.22 : 0.12;
+            let organization = Number.isFinite(system.organization) ?
+                system.organization : defaultOrganization;
+            let defaultWarmCore = system.type===TROP ? 0.92 :
+                system.type===SUBTROP ? 0.58 :
+                system.type===MONSOON ? 0.42 :
+                system.type===TROPWAVE ? 0.28 : 0.08;
+            let warmCore = Number.isFinite(system.lowerWarmCore) && Number.isFinite(system.upperWarmCore) ?
+                (system.lowerWarmCore+system.upperWarmCore)/2 : defaultWarmCore;
+            let depthFactor = Number.isFinite(system.depth) ?
+                constrain(1-0.18*system.depth,0.7,1) : 1;
+            let typeTropicalFactor = system.type===TROP ? 1 :
+                system.type===SUBTROP ? 0.58 :
+                system.type===MONSOON ? 0.34 :
+                system.type===TROPWAVE ? 0.18 : 0;
+            let tropicalFactor = constrain(
+                typeTropicalFactor *
+                (0.35+0.65*constrain(organization,0,1)) *
+                (0.35+0.65*constrain(warmCore,0,1)) *
+                depthFactor,
+                0,1
+            );
+            let frontalFactor = 1-tropicalFactor;
+            // Land.getAtXY returns 0 for water and a positive value for land.
+            // On the Earth map that positive value is an elevation-like
+            // value beginning at 0.501, so treating 0.52 as a land threshold
+            // lets low coastal pixels behave exactly like open water. A
+            // confirmed land contact should break the inner tropical
+            // structure immediately; live land-exposure memory keeps it from
+            // reappearing on the first ocean sample after landfall.
+            let landFraction = Number.isFinite(system.landFraction) ?
+                constrain(system.landFraction,0,1) : 0;
+            // Keep the instantaneous coastline contact cue very small. The
+            // actual core collapse must come from landWarmCoreDamage, which
+            // accumulates over successive hourly updates instead of turning
+            // the lower layer into clear air on the first land sample.
+            let landContactSuppression = landFraction>0 ?
+                0.02+0.04*landFraction : 0;
+            let landMemory = Number.isFinite(system.landWarmCoreDamage) ?
+                constrain(system.landWarmCoreDamage,0,1) : 0;
+            let landMemorySuppression = 1-Math.pow(1-landMemory,1.7);
+            let landSuppression = constrain(max(
+                landContactSuppression,landMemorySuppression
+            ),0,1);
+            // Use a steeper response for the eye/eyewall than for the broad
+            // precipitation shield: the center fills before the outer rain
+            // field disappears.
+            let landCoreFactor = Math.pow(1-landSuppression,1.55);
+            let organizationLevel = Number.isFinite(system.organization) ?
+                constrain(system.organization,0,1) : 1;
+            let lowerWarmCoreLevel = Number.isFinite(system.lowerWarmCore) ?
+                constrain(system.lowerWarmCore,0,1) : 1;
+            // A weakening eyewall can no longer maintain the dry, subsiding
+            // eye. Land damage therefore fills the eye progressively, with
+            // the live lower warm-core and organization state adding detail.
+            let eyeFillFactor = constrain(
+                0.58*landSuppression+
+                0.24*(1-lowerWarmCoreLevel)+
+                0.18*(1-organizationLevel),
+                0,1
+            );
+            let sizeLevel = constrain(round(system.circulationSize),0,6);
+            let typeFactor = system.type===TROP ? 1 :
+                system.type===SUBTROP ? 0.84 :
+                system.type===MONSOON ? 0.72 :
+                system.type===TROPWAVE ? 0.55 : 0.78;
+            let intensity = Math.max(
+                0.12,
+                0.10+0.60*Math.pow(windIntensity,0.85)+
+                0.30*Math.pow(pressureIntensity,0.85)
+            );
+            // Carry the same smooth intensity ladder into inner-core
+            // organization. This keeps C3, C4, and C5 from sharing an
+            // identical eye/eyewall descriptor after the wind gates saturate.
+            // The structural gates remain bounded; base-scan strength below
+            // is the channel that carries the extended intensity tail.
+            let intensityStructure = 0.62+0.38*Math.pow(
+                constrain(intensity,0,1),0.85
+            );
+            let environmentFactor =
+                (0.52+0.48*moistureFactor) *
+                (0.72+0.28*sstFactor) *
+                (1-0.16*shearFactor) *
+                (1-0.25*landSuppression);
+            let strength = constrain(intensity*environmentFactor*typeFactor,0,1);
+            // The base scan is the storm signal after the environment has
+            // shaped it, so avoid a hard intensity floor. Instead, let strong
+            // systems tolerate more environmental noise through a continuous
+            // nonlinear response: weak systems remain environment-sensitive,
+            // while a deep 200 kt cyclone does not collapse into a faint
+            // rainband because one sampled field is unfavorable.
+            // Keep the response continuous across all system strengths. The
+            // old exponent made environmental penalties dominate even for a
+            // deep, organized cyclone, leaving the entire base-scan family
+            // systematically too faint. Stronger systems get more of their
+            // observed contrast back, while weak systems remain sensitive to
+            // shear, moisture, SST, and land exposure.
+            let baseScanBoost = 1+0.13*Math.pow(intensity,0.75);
+            // Do not let the environment exponent become negative when an
+            // extreme storm is rendered. That would turn an unfavorable
+            // sampled environment into an artificial supercharge; the
+            // intensity tail itself is sufficient to preserve the ordering.
+            let baseScanEnvironmentExponent = Math.max(
+                0.34,1-0.63*Math.pow(constrain(intensity,0,1),0.8)
+            );
+            let baseScanStrength = Math.max(
+                0,
+                baseScanBoost*Math.pow(intensity,0.92) *
+                Math.pow(typeFactor,0.84) *
+                Math.pow(environmentFactor,baseScanEnvironmentExponent)
+            );
+
+            // A visible eyewall is a mature, organized tropical feature, not
+            // a default ring around every low. Keep weak disturbances and
+            // tropical waves as broad, continuous precipitation shields.
+            let organizationFactor = constrain((organization-0.52)/0.38,0,1);
+            let eyewallPotential = constrain((system.windSpeed-50)/35,0,1) *
+                organizationFactor*tropicalFactor*landCoreFactor *
+                intensityStructure*(1-0.35*shearFactor);
+
+            let eyewallCycle = Number.isFinite(system.eyewallCycle) ?
+                constrain(system.eyewallCycle,0,1) : 0;
+            let cycleWeights = typeof eyewallReplacementWeights==='function' ?
+                eyewallReplacementWeights(
+                    eyewallCycle,
+                    system.eyewallFailure,
+                    Number.isFinite(system.eyewallFailureEventMode) &&
+                        system.eyewallFailureEventMode>0 ?
+                        system.eyewallFailureEventMode : system.eyewallFailureMode,
+                    system.eyewallReplacementMemory,
+                    system.eyewallFailureEvent
+                ) : {inner:1,outer:0};
+            // Deep convection has its own environmental signal, but the
+            // lower-level wind/pressure intensity also contributes to the
+            // realized tower strength. This preserves vigorous convection in
+            // a weak, moist tropical cyclone without making a deep cyclone's
+            // VCDG/ECDG coverage depend only on a sampled activity value. The
+            // eye-opening factor attenuates the combined signal while leaving
+            // the outer rain shield alive.
+            let eyeOpening = typeof simulatedEyeOpeningFactor==='function' ?
+                simulatedEyeOpeningFactor({
+                    eyewallCycle,
+                    eyeOpening: system.eyeOpening,
+                    eyewallFailure: system.eyewallFailure,
+                    eyewallFailureEvent: system.eyewallFailureEvent
+                }) : 0;
+            let convectiveActivity = Number.isFinite(system.convectiveActivity) ?
+                constrain(system.convectiveActivity,0,1) :
+                Number.isFinite(system.convectionActivity) ?
+                    constrain(system.convectionActivity,0,1) :
+                    constrain(
+                        0.25+0.46*moistureFactor+0.28*sstFactor+
+                        0.08*(1-intensity),
+                        0.12,1
+                    );
+            let lowerLevelConvection = constrain(intensity,0,1);
+            let combinedConvectiveActivity = constrain(
+                0.74*convectiveActivity+0.26*lowerLevelConvection,0,1
+            );
+            // Keep the replacement response visible without starving the
+            // convective ring; the outer/capping layer supplies the contrast.
+            let convectionStrength = constrain(
+                combinedConvectiveActivity*(1-0.22*eyeOpening),0,1
+            );
+            // Do not leave a replacement ring behind when a historical point
+            // or a just-updated live point is on land.
+            // These are relative wall weights. Land damage is already applied
+            // to eyewallPotential; multiplying here would count it twice.
+
+            // The phase is deterministic so analysis playback and saves do
+            // not change the arrangement of rainbands from frame to frame.
+            let phase = system.visualSeed%TAU;
+            if(phase<0) phase += TAU;
+            let replacementEyeRadius = simulatedReplacementRadius(system);
+            let outerMultiplier = 1+0.22*landSuppression+0.32*frontalFactor;
+            let outerX = max(rmwX*3,system.sigmaX*0.72)*outerMultiplier;
+            let outerY = max(rmwY*3,system.sigmaY*0.72)*outerMultiplier;
+            let shearOffset = max(rmwX,rmwY)*(
+                0.42*shearFactor+0.16*frontalFactor
+            );
+            // Sample the land surrounding the storm by azimuth. Landfall
+            // should erode the inner precipitation field from the landward
+            // side, rather than only dimming the whole system uniformly.
+            // Keep this profile on the cached descriptor so the rasterizer
+            // does not query the land image once for every output pixel.
+            let landAbrasionSectorCount = 32;
+            let landAbrasionProfile = new Array(landAbrasionSectorCount).fill(0);
+            // Keep the spatial landward abrasion separate from the slower
+            // center-core collapse. The first landfall sample should still
+            // erode the sectors that actually intersect land; only the
+            // broad all-around breakdown is time-dependent.
+            let landAbrasionBaseline = 0.08*landSuppression;
+            // A ring that merely clips land should already lose continuity;
+            // the center-core memory then increases that response smoothly
+            // instead of making the effect wait for the center to cross land.
+            let landContactResponse = 0.42+0.58*landSuppression;
+            let abrasionRadii = [0.45,0.75,1.05,1.5,2.1,3.0];
+            let abrasionWeights = [1,1,0.92,0.78,0.58,0.4];
+            if(typeof land!=='undefined' && land &&
+                land.getAtXY instanceof Function){
+                for(let sector=0;sector<landAbrasionSectorCount;sector++){
+                    let angle = sector*TAU/landAbrasionSectorCount;
+                    let exposure = 0;
+                    let sampledWeight = 0;
+                    for(let sample=0;sample<abrasionRadii.length;sample++){
+                        let radiusFactor = abrasionRadii[sample];
+                        let sampleX = system.x+Math.cos(angle)*rmwX*radiusFactor;
+                        let sampleY = system.y+Math.sin(angle)*rmwY*radiusFactor;
+                        if(sampleX<0 || sampleX>WIDTH ||
+                            sampleY<0 || sampleY>HEIGHT) continue;
+                        let terrain = land.getAtXY(
+                            sampleX,this.basin.hemY(sampleY)
+                        );
+                        sampledWeight += abrasionWeights[sample];
+                        if(!terrain) continue;
+                        // Any confirmed land contact matters; elevation only
+                        // gently increases the severity of the abrasion.
+                        terrain = constrain(
+                            map(terrain,0.501,1,0.55,1,true),0,1
+                        );
+                        exposure += terrain*abrasionWeights[sample];
+                    }
+                    landAbrasionProfile[sector] = max(landAbrasionBaseline,
+                        sampledWeight>0 ? exposure/sampledWeight*landContactResponse : 0);
+                }
+                // Remove pixel-sized coastline steps while retaining the
+                // broad landward wedge that breaks the ring.
+                let smoothedProfile = new Array(landAbrasionSectorCount);
+                for(let sector=0;sector<landAbrasionSectorCount;sector++){
+                    let previous = (sector-1+landAbrasionSectorCount)%
+                        landAbrasionSectorCount;
+                    let next = (sector+1)%landAbrasionSectorCount;
+                    smoothedProfile[sector] =
+                        0.5*landAbrasionProfile[sector]+
+                        0.25*landAbrasionProfile[previous]+
+                        0.25*landAbrasionProfile[next];
+                }
+                landAbrasionProfile = smoothedProfile;
+            }
+            let eyePotential = constrain((system.windSpeed-58)/42,0,1) *
+                organizationFactor*tropicalFactor*landCoreFactor*
+                intensityStructure*(1-0.25*shearFactor);
+            // Keep the overview map's physical resolution intact, but give
+            // the analysis imagery a bounded eye enlargement when the map
+            // collapses the inner core to only a few pixels. This scale is
+            // applied only by the imagery masks, never by pressure or wind
+            // fields, and is shared by BD and the cloud product.
+            let imageryEyeScale = constrain(
+                4/Math.max(2.5,Math.min(rmwX,rmwY)),1,1.6
+            );
+            let bandCount = system.type===EXTROP ?
+                2+(sizeLevel+floor(phase*10))%2 :
+                3+(sizeLevel+floor(phase*10))%3+
+                (rainbandPotential>0.72 && system.type!==TROPWAVE ? 1 : 0);
+            let bands = [];
+            for(let band=0;band<bandCount;band++){
+                let seed = phase+band*TAU/bandCount+band*band*0.37;
+                let strengthSeed = 0.5+0.5*Math.sin(
+                    seed*3.13+band*17.71
+                );
+                let widthSeed = 0.5+0.5*Math.sin(seed*5.27+band*11.43);
+                let reachSeed = 0.5+0.5*Math.sin(
+                    seed*7.19+band*23.17
+                );
+                let startSeed = 0.5+0.5*Math.sin(seed*6.41+band*31.7);
+                let curveSeed = 0.5+0.5*Math.sin(seed*9.31+band*5.73);
+                let moistureStrength = 0.58+0.58*rainbandPotential;
+                bands.push({
+                    phase: seed%TAU,
+                    strength: constrain(
+                        (0.28+0.72*strengthSeed)*moistureStrength,0,1
+                    ),
+                    width: 0.10+0.17*widthSeed+0.04*frontalFactor+
+                        0.035*rainbandPotential,
+                    // Humid outer-core convection starts closer to the
+                    // eyewall and reaches farther out, so bands are easier to
+                    // see and can seed a replacement wall.
+                    start: max(0.58,0.82+0.32*startSeed-
+                        0.24*rainbandPotential),
+                    reach: 1.35+2.65*reachSeed+
+                        0.65*rainbandPotential,
+                    curvature: 0.45+0.9*curveSeed
+                });
+            }
+            result.push({
+                storm: system.storm,
+                x: system.x,
+                y: system.y,
+                rmwX,
+                rmwY,
+                radiusOfMaxWind: radius,
+                outerX,
+                outerY,
+                outerRadius: constrain(max(outerX/rmwX,outerY/rmwY),3,8),
+                windSpeed: system.windSpeed,
+                eyeType: system.eyeType,
+                eyeDiameter: system.eyeDiameter,
+                strength,
+                // Keep the pressure/wind intensity available to the cloud-top
+                // temperature model. `strength` includes local environmental
+                // suppression, which is useful for precipitation products but
+                // can make a very deep cyclone's IR dense overcast too warm.
+                intensity,
+                baseScanStrength,
+                convectiveActivity,
+                convectionStrength,
+                eyeOpening,
+                eyewallFactor: eyewallPotential,
+                eyeFactor: eyePotential,
+                imageryEyeScale,
+                eyewallCycle,
+                cloudEyeExpansion: system.cloudEyeExpansion,
+                eyewallReplacementMemory: system.eyewallReplacementMemory,
+                eyewallReplacementHandoff: Number.isFinite(system.eyewallReplacementHandoff) ?
+                    constrain(system.eyewallReplacementHandoff,0,1) : 0,
+                eyewallFailure: system.eyewallFailure,
+                eyewallFailureMode: system.eyewallFailureMode,
+                eyewallFailureEvent: system.eyewallFailureEvent,
+                eyewallFailureEventMode: system.eyewallFailureEventMode,
+                eyewallInnerWeight: cycleWeights.inner,
+                eyewallOuterWeight: cycleWeights.outer,
+                eyewallOuterRadius: replacementEyeRadius,
+                tropicalFactor,
+                frontalFactor,
+                landSuppression,
+                eyeFillFactor,
+                landAbrasionProfile,
+                landAbrasionSectorCount,
+                 landWarmCoreDamage: landMemory,
+                 rainbandActivity,
+                 rainbandFormation,
+                 rainbandPotential,
+                 bandPower: 1.7+0.55*frontalFactor+0.28*landSuppression-
+                     0.38*rainbandPotential,
+                 organization,
+                 lowerWarmCore: lowerWarmCoreLevel,
+                 shearFactor,
+                shearAngle,
+                shearOffset,
+                bandCount,
+                bands,
+                frontAngle: shearAngle+this.basin.hem(PI/2),
+                phase,
+                hemisphere: this.basin.SHem ? -1 : 1
+            });
+        }
+
+        this.baseScanCacheKey = cacheKey;
+        this.baseScanSystems = result;
+        return result;
+    }
+
+    getSurfaceWind(x,y,z,target,targetStorm){
         let result = target || createVector();
         // EnvField map functions receive hemisphere-normalized coordinates.
         let steering = this.get('LLSteering',x,y,z,true);
@@ -736,7 +1291,10 @@ class Environment{  // Environmental fields that determine storm strength and st
         let latitudeSpan = abs(mapData.north-mapData.south);
         let longitudeScale = WIDTH/longitudeSpan;
         let latitudeScale = HEIGHT/latitudeSpan;
-        let latitude = Coordinate.convertFromXY(this.basin.mapType,x,this.basin.hemY(y)).latitude;
+        // `y` is already hemisphere-normalized by EnvField.get() before the
+        // map function is called. Flipping it a second time mirrors the wind
+        // scale in Southern Hemisphere basins and puts the field off-center.
+        let latitude = Coordinate.convertFromXY(this.basin.mapType,x,y).latitude;
         let latitudeCosine = max(0.25,Math.cos(latitude*Math.PI/180));
 
         // Convert low-level steering from map units per hour to knots.
@@ -745,23 +1303,70 @@ class Environment{  // Environmental fields that determine storm strength and st
             steering.y/latitudeScale*60
         );
 
-        for(let system of this.getPressureSystems(z)){
+        for(let system of this.getPressureSystems(z,targetStorm)){
             let dx = (x-system.x)/longitudeScale*60*system.latitudeCosine;
             let dy = (y-system.y)/latitudeScale*60;
             let radius = Math.hypot(dx,dy);
+            let model = system.windModel;
+            let maximumWind = model && Number.isFinite(model.maximumWind) ?
+                model.maximumWind : system.windSpeed;
+            let innerRadius = model && Number.isFinite(model.effectiveInnerRadius) ?
+                model.effectiveInnerRadius : system.radiusOfMaxWind;
+            let decayExponent = model && Number.isFinite(model.decayExponent) ?
+                model.decayExponent :
+                system.type===EXTROP ? 0.54 : system.type===MONSOON ? 0.5 : 0.62;
+            let angle = Math.atan2(dy,dx);
+            let circulationDirection = model &&
+                Number.isFinite(model.circulationDirection) ?
+                model.circulationDirection : this.basin.SHem ? -1 : 1;
+            let motionX = model && Number.isFinite(model.motionX) ?
+                model.motionX : 0;
+            let motionY = model && Number.isFinite(model.motionY) ?
+                model.motionY : 0;
             if(radius<1) continue;
-            let maximumWind = system.windSpeed;
-            let innerRadius = system.radiusOfMaxWind;
-            let decayExponent = system.type===EXTROP ? 0.54 : system.type===MONSOON ? 0.5 : 0.62;
-            let speed = radius<innerRadius ?
-                maximumWind*pow(radius/innerRadius,0.7) :
-                maximumWind*pow(innerRadius/radius,decayExponent);
+
+            let radiusFactor = model && typeof model.radiusFactor==='function' ?
+                model.radiusFactor(angle) : 1;
+            let adjustedInnerRadius = Math.max(1,innerRadius*radiusFactor);
+            // Keep the wind field a single source of truth. SAR used to take
+            // a separate retrieval path here (replacement profile plus a
+            // distant fade), while the E-key surface-wind layer used the
+            // idealized profile below. That made the same storm have two
+            // incompatible wind fields depending on where it was viewed.
+            // The shared replacement profile includes the ordinary asymmetric
+            // case as its fallback, so both views now sample identical winds.
+            let speed = typeof simulatedReplacementWindProfile==='function' ?
+                maximumWind*simulatedReplacementWindProfile(
+                    system,radius,decayExponent,angle,z
+                ) : radius<adjustedInnerRadius ?
+                    maximumWind*pow(radius/adjustedInnerRadius,0.7) :
+                    maximumWind*pow(adjustedInnerRadius/radius,decayExponent);
+            // The shared profile keeps the resolved core and replacement wall
+            // intact, but its idealized power-law tail must not dominate the
+            // whole map when several storms are active. Apply the same smooth
+            // swath handoff to both E-key and SAR queries.
+            if(typeof simulatedSarWindOuterFade==='function')
+                speed *= simulatedSarWindOuterFade(
+                    radius/Math.max(1,system.radiusOfMaxWind)
+                );
             if(speed<2) continue;
 
-            // In normalized coordinates every cyclone turns counter-clockwise;
-            // EnvField.get reflects vector y for a southern-hemisphere display.
-            result.x += dy/radius*speed;
-            result.y -= dx/radius*speed;
+            // Use the same circulation direction as getWindRadii(). In
+            // normalized coordinates EnvField.get later reflects vector y for
+            // the Southern Hemisphere display.
+            result.x += circulationDirection*dy/radius*speed;
+            result.y -= circulationDirection*dx/radius*speed;
+            // Storm translation is a local contribution to the circulation,
+            // not a uniform background flow. Adding the full motion vector
+            // before the radius check made every storm accelerate every map
+            // pixel, so several moving storms could manufacture 100 kt winds
+            // far from all of their centers. Weight it by the local storm
+            // wind and let it vanish with the storm's outer tail.
+            let motionWeight = constrain(
+                speed/Math.max(1,maximumWind),0,1
+            );
+            result.x += motionX*motionWeight;
+            result.y += motionY*motionWeight;
         }
         return result;
     }

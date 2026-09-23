@@ -1,5 +1,5 @@
 const TITLE = "Cyclone Simulator";
-const VERSION_NUMBER = "0.4.33";
+const VERSION_NUMBER = "0.34";
 
 const SAVE_FORMAT = 7;  // Format #7 in use starting in v0.4
 const EARLIEST_COMPATIBLE_FORMAT = 0;
@@ -262,6 +262,95 @@ const TROPWAVE = 3;
 // Keep new storm types at the end so numeric IDs in existing saves remain valid.
 const MONSOON = 4;
 const STORM_TYPES = 5;
+
+// Eye diameters are stored in nautical miles. NOAA/AOML describes observed
+// tropical-cyclone eyes spanning roughly 5-120 miles, with most around
+// 20-40 miles; the pinhole-eye climatology uses <10 n mi. The five gameplay
+// bins below turn those observations into stable, readable structural types.
+// The 3 n mi lower bound is a simulation floor, not a claim that smaller eyes
+// cannot be observed.
+const EYE_TYPE_PINHOLE = 0;
+const EYE_TYPE_SMALL = 1;
+const EYE_TYPE_MEDIUM = 2;
+const EYE_TYPE_LARGE = 3;
+const EYE_TYPE_GIANT = 4;
+const EYE_TYPE_COUNT = 5;
+const EYE_TYPE_DEFS = Object.freeze([
+    Object.freeze({
+        key: 'pinhole',
+        label: 'Pinhole eye (\u9488\u773c)',
+        diameterMin: 3,
+        diameterMax: 10,
+        diameterLabel: '<10 nmi',
+        typicalDiameter: 6,
+        // Compact eyes contract and spin up more efficiently in the model.
+        intensificationRate: 1.38,
+        pressurePotential: 1.10,
+        windPotential: 1.08,
+        visualScale: 0.45
+    }),
+    Object.freeze({
+        key: 'small',
+        label: 'Small eye (\u5c0f\u773c)',
+        diameterMin: 10,
+        diameterMax: 20,
+        diameterLabel: '10-20 nmi',
+        typicalDiameter: 15,
+        intensificationRate: 1.22,
+        pressurePotential: 1.06,
+        windPotential: 1.04,
+        visualScale: 0.70
+    }),
+    Object.freeze({
+        key: 'medium',
+        label: 'Medium eye (\u4e2d\u773c)',
+        diameterMin: 20,
+        diameterMax: 40,
+        diameterLabel: '20-40 nmi',
+        typicalDiameter: 30,
+        intensificationRate: 1,
+        pressurePotential: 1,
+        windPotential: 1,
+        visualScale: 1
+    }),
+    Object.freeze({
+        key: 'large',
+        label: 'Large eye (\u5927\u773c)',
+        diameterMin: 40,
+        diameterMax: 80,
+        diameterLabel: '40-80 nmi',
+        typicalDiameter: 60,
+        intensificationRate: 0.92,
+        pressurePotential: 0.98,
+        windPotential: 0.98,
+        visualScale: 1.45
+    }),
+    Object.freeze({
+        key: 'giant',
+        label: 'Giant eye (\u5de8\u773c)',
+        diameterMin: 80,
+        diameterMax: 120,
+        diameterLabel: '80-120 nmi',
+        typicalDiameter: 100,
+        intensificationRate: 0.86,
+        pressurePotential: 0.96,
+        windPotential: 0.96,
+        visualScale: 1.8
+    })
+]);
+
+// A mature tropical cyclone can contract its clear eye as the inner core
+// tightens. These limits affect the live clear-eye diameter, not the broader
+// circulation or the persistent eye-type category. The type-specific minimum
+// diameter remains the final floor, so the eye can become very small without
+// disappearing altogether.
+const EYE_CONTRACTION_START_WIND = 85;
+const EYE_CONTRACTION_FULL_WIND = 150;
+const EYE_CONTRACTION_START_PRESSURE = 980;
+const EYE_CONTRACTION_FULL_PRESSURE = 910;
+const EYE_CONTRACTION_MAX_REDUCTION = 0.42;
+const EYE_CONTRACTION_RESPONSE = 0.16;
+const EYE_EXPANSION_RESPONSE = 0.07;
 const WIND_FIELD_STYLE_NHC = 0;
 const WIND_FIELD_STYLE_JTWC = 1;
 const WIND_FIELD_STYLE_JMA = 2;
@@ -288,6 +377,43 @@ const ENV_LAYER_TILE_SIZE = 20;
 const ISOBAR_GRID_SIZE = 12;
 const ISOBAR_INTERVAL = 4;
 const ISOBAR_LABEL_INTERVAL = 8;
+
+// Temporary feature switches for derived weather imagery. The field
+// implementations remain available so these layers can be restored without
+// rebuilding their simulation logic.
+const ENABLE_SIMULATED_BASE_SCAN_LAYER = false;
+const ENABLE_SIMULATED_CLOUD_LAYER = false;
+
+// Eyewall replacement cycles are only meaningful for mature tropical
+// cyclones. The cycle is transient live-simulation state and is not recorded
+// in storm advisories or saved basin data.
+const EYEWALL_REPLACEMENT_MIN_WIND = 105;
+const EYEWALL_REPLACEMENT_MIN_ORGANIZATION = 0.68;
+const EYEWALL_REPLACEMENT_MIN_WARM_CORE = 0.7;
+const EYEWALL_REPLACEMENT_MIN_DURATION = 36;
+const EYEWALL_REPLACEMENT_MAX_DURATION = 60;
+const EYEWALL_REPLACEMENT_MIN_COOLDOWN = 48;
+const EYEWALL_REPLACEMENT_MAX_COOLDOWN = 96;
+const EYEWALL_REPLACEMENT_TRIGGER_RATE = 0.0035;
+// Eye-size response for a live eyewall replacement. The new outer wall can
+// be much more prominent than the clear-eye expansion, so keep this response
+// bounded and leave a smaller residual eye after a completed cycle.
+const EYEWALL_REPLACEMENT_ACTIVE_EXPANSION_MAX = 0.46;
+const EYEWALL_REPLACEMENT_RESIDUAL_EXPANSION = 0.24;
+const EYEWALL_REPLACEMENT_MEMORY_DECAY = 0.0015;
+const EYEWALL_REPLACEMENT_FAILURE_EXPANSION = 0.34;
+const EYEWALL_REPLACEMENT_FAILURE_EVENT_DURATION = 18;
+const EYEWALL_REPLACEMENT_POST_RADIUS_GAIN = 0.90;
+// A successful replacement hands the imagery from the active two-wall
+// structure to the settled outer wall over several simulation days. This is
+// visual-only state; the physical cycle still completes at its normal time.
+const EYEWALL_REPLACEMENT_HANDOFF_DURATION = 30;
+// Rainband activity is simulated as a small live-only state on each active
+// system. It gives eyewall replacement a physical precursor even when no
+// cyclone is selected and the imagery raster is not being rendered.
+const RAINBAND_REPLACEMENT_THRESHOLD = 0.56;
+const RAINBAND_REPLACEMENT_TRIGGER_RATE = 0.010;
+
 const NC_OFFSET_RANDOM_FACTOR = 4096;
 const ACE_WIND_THRESHOLD = 34;
 const ACE_DIVISOR = 10000;

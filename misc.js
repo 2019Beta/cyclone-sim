@@ -44,12 +44,47 @@ function fullscreenScale(){
     return min(window.innerWidth/WIDTH,window.innerHeight/HEIGHT);
 }
 
+function redrawEnvironmentLayerAfterScale(basin,fieldName){
+    if(!basin || UI.viewBasin!==basin || !basin.env) return;
+
+    let env = basin.env;
+    // Keep the selected field by name rather than relying only on its numeric
+    // index.  The cloud-imagery panel can cause environment fields to be
+    // rebuilt while the fullscreen transition is in progress.
+    if(fieldName!==undefined){
+        let fieldIndex = env.fieldList.indexOf(fieldName);
+        if(fieldIndex>=0) env.displaying = fieldIndex;
+    }
+
+    if(env.displaying>=0){
+        let field = env.fields[env.fieldList[env.displaying]];
+        if(field){
+            env.layerIsOceanic = !!field.oceanic;
+            env.layerIsVector = !!(field.isVectorField && !field.vectorColorFill);
+        }
+    }
+    env.displayLayer();
+}
+
 function updateCanvasScale(){
+    let basin = UI.viewBasin;
+    let env = basin && basin.env;
+    let fieldName = env && env.displaying>=0 ? env.fieldList[env.displaying] : undefined;
     scaler = document.fullscreenElement===canvas ? fullscreenScale() : 1;
     rescaleCanvases(scaler);
-    if(UI.viewBasin){
+    if(basin){
         refreshTracks(true);
-        UI.viewBasin.env.displayLayer();
+        redrawEnvironmentLayerAfterScale(basin,fieldName);
+
+        // A fullscreen transition can resize the p5 renderer once more after
+        // the fullscreenchange event. Redraw on the following frame so the
+        // resized buffer cannot leave the selected environmental layer clear.
+        if(typeof requestAnimationFrame==='function'){
+            requestAnimationFrame(()=>{
+                if(UI.viewBasin===basin && basin.env===env)
+                    redrawEnvironmentLayerAfterScale(basin,fieldName);
+            });
+        }
     }
 }
 

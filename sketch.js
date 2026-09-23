@@ -12,6 +12,7 @@ var paused,
     windFields,
     stormIcons,
     forecastTracks,
+    canvas,
     landBuffer,
     outBasinBuffer,
     landShadows,
@@ -35,7 +36,10 @@ function setup(){
 
     setupDatabase();
 
-    createCanvas(WIDTH,HEIGHT);
+    // Keep the DOM canvas element available to the fullscreen handlers. p5's
+    // global `createCanvas()` does not create a `canvas` variable for us; the
+    // renderer object and its underlying HTMLCanvasElement are distinct.
+    canvas = createCanvas(WIDTH,HEIGHT).elt;
     defineColors(); // Set the values of COLORS since color() can't be used before setup()
     background(COLORS.bg);
     paused = false;
@@ -236,15 +240,16 @@ class Settings{
                 let n = "set" + order[i].charAt(0).toUpperCase() + order[i].slice(1);
                 this[n] = sf(order[i]);
             }
+            if(typeof updateStormImageryTabs==='function') updateStormImageryTabs();
         });
     }
 
     static order(){
-        return ["windFieldStyle","showStormIcons","showWindFields","colorScheme","speedUnit","smoothLandColor","showMagGlass","snowLayers","useShadows","trackMode","showStrength","doAutosave"];    // add new settings to the beginning of this array
+        return ["showScanTab","showCloudsTab","showLayerLegends","windFieldStyle","showStormIcons","showWindFields","colorScheme","speedUnit","smoothLandColor","showMagGlass","snowLayers","useShadows","trackMode","showStrength","doAutosave"];    // add new settings to the beginning of this array
     }
 
     static defaults(){
-        return [WIND_FIELD_STYLE_NHC,true,false,0,0,true,false,2,false,0,false,true];  // add new defaults to the beginning of this array
+        return [false,true,false,WIND_FIELD_STYLE_NHC,true,false,0,0,true,false,2,false,0,false,true];  // add new defaults to the beginning of this array
     }
 
     save(){

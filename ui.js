@@ -229,6 +229,127 @@ class UI{
 
 UI.elements = [];
 
+function layerLegendColor(field,value){
+    let c;
+    if(field.hueMap instanceof Function){
+        c = field.hueMap(value);
+        colorMode(RGB);
+    }else if(field.hueMap instanceof Array){
+        let h = field.hueMap;
+        colorMode(HSB);
+        c = color(map(value,h[0],h[1],h[2],h[3],true),100,100);
+        colorMode(RGB);
+    }else c = COLORS.UI.text;
+    return c;
+}
+
+function layerLegendValue(field,legend,value,index){
+    if(legend.labels instanceof Array && legend.labels[index]!==undefined)
+        return legend.labels[index];
+    if(legend.valueFormat instanceof Function)
+        return legend.valueFormat(value);
+    return field.displayFormat(value);
+}
+
+function renderEnvLayerLegend(){
+    if(!simSettings.showLayerLegends || !(UI.viewBasin instanceof Basin) || UI.viewBasin.env.displaying<0) return;
+
+    let basin = UI.viewBasin;
+    let fieldName = basin.env.fieldList[basin.env.displaying];
+    let field = basin.env.fields[fieldName];
+    if(!field) return;
+
+    let legend = field.legend || {};
+    let legendType = legend.type || (field.contourInterval ? 'contour' :
+        field.isVectorField && !field.vectorColorFill ? 'vector' : 'gradient');
+
+    let x = 8;
+    let width = 256;
+    let height = 64;
+    let y = HEIGHT-30-height-6;
+    let left = x+8;
+    let barY = y+24;
+    let barWidth = width-16;
+    let barHeight = 11;
+
+    push();
+    noStroke();
+    fill(COLORS.UI.box);
+    rect(x,y,width,height);
+    fill(COLORS.UI.text);
+    textAlign(LEFT,TOP);
+    textSize(11);
+    text(legend.title || field.displayName,left,y+5);
+
+    if(legendType==='vector'){
+        let sampleValue = legend.sampleValue===undefined ?
+            ((field.magMap && field.magMap[0] || 0)+(field.magMap && field.magMap[1] || 1))/2 : legend.sampleValue;
+        let magMap = field.magMap || [0,1,6,22];
+        let arrowLength = constrain(map(sampleValue,magMap[0],magMap[1],magMap[2],magMap[3],true),12,52);
+        let arrowX = left+8;
+        let arrowY = barY+7;
+        let arrowColor = layerLegendColor(field,sampleValue);
+        stroke(arrowColor);
+        strokeWeight(2);
+        line(arrowX,arrowY,arrowX+arrowLength,arrowY);
+        noStroke();
+        fill(arrowColor);
+        triangle(arrowX+arrowLength+5,arrowY,arrowX+arrowLength,arrowY-3,arrowX+arrowLength,arrowY+3);
+        fill(COLORS.UI.text);
+        textAlign(LEFT,CENTER);
+        text(legend.valueFormat instanceof Function ? legend.valueFormat(sampleValue) : sampleValue,arrowX+arrowLength+14,arrowY);
+    }else if(legendType==='contour'){
+        let lineY = barY+7;
+        stroke(255);
+        strokeWeight(3);
+        line(left,lineY,left+36,lineY);
+        stroke(COLORS.UI.text);
+        strokeWeight(1.4);
+        line(left,lineY,left+36,lineY);
+        noStroke();
+        fill(COLORS.UI.text);
+        textAlign(LEFT,CENTER);
+        let interval = field.contourInterval;
+        let labelInterval = field.contourLabelInterval || interval;
+        let description = legend.description || interval + ' hPa contours · labels every ' + labelInterval + ' hPa';
+        text(description,left+50,lineY);
+    }else{
+        let range = legend.range || [0,1];
+        let minimum = range[0];
+        let maximum = range[1];
+        let ticks = legend.ticks instanceof Array && legend.ticks.length ? legend.ticks : [minimum,maximum];
+        for(let i=0;i<barWidth;i++){
+            let value = map(i,0,barWidth-1,minimum,maximum);
+            fill(layerLegendColor(field,value));
+            rect(left+i,barY,1,barHeight);
+        }
+        noFill();
+        stroke(COLORS.UI.text);
+        strokeWeight(1);
+        rect(left,barY,barWidth,barHeight);
+        textSize(9);
+        for(let i=0;i<ticks.length;i++){
+            let value = ticks[i];
+            let tickX = map(value,minimum,maximum,left,left+barWidth,true);
+            line(tickX,barY+barHeight,tickX,barY+barHeight+3);
+            noStroke();
+            fill(COLORS.UI.text);
+            if(i===0){
+                textAlign(LEFT,TOP);
+                text(layerLegendValue(field,legend,value,i),tickX,barY+barHeight+5);
+            }else if(i===ticks.length-1){
+                textAlign(RIGHT,TOP);
+                text(layerLegendValue(field,legend,value,i),tickX,barY+barHeight+5);
+            }else{
+                textAlign(CENTER,TOP);
+                text(layerLegendValue(field,legend,value,i),tickX,barY+barHeight+5);
+            }
+            stroke(COLORS.UI.text);
+        }
+    }
+    pop();
+}
+
 UI.renderAll = function(){
     for(let u of UI.elements){
         push();
@@ -295,6 +416,1472 @@ UI.click = function(){
 
 UI.viewBasin = undefined;
 // UI.viewTick = undefined;
+
+let panel_timeline_container;
+let stormImageryPanel;
+let stormImageryRaster;
+let stormImageryRasterBasin;
+let stormImageryRasterStorm;
+let stormImageryRasterTick;
+let stormImageryRasterTab;
+let stormImageryRasterSize;
+let stormImageryRasterExtent;
+let stormImageryRasterSarMaxWind;
+// Clouds and IR-BD use the same simulated cloud-top temperature field. Keep
+// that scalar field separate from the tab-specific color raster so switching
+// between the two products only recolors pixels instead of re-running the
+// multi-scale cloud model.
+let stormImageryCloudTemperatureCache;
+let stormImageryTab = 'clouds';
+let stormImageryHighDefinition = false;
+let stormPolarCloudRaster;
+let stormPolarIrBdRaster;
+let stormPolarBaseScanRaster;
+let stormPolarSarRaster;
+let stormPolarSatelliteRenderJob;
+let stormPolarCloudTemperatureCache;
+let stormPolarRasterState = {
+    clouds: {basin:undefined,storm:undefined,tick:undefined,extent:undefined,rendered:false,maxWind:undefined},
+    irBd: {basin:undefined,storm:undefined,tick:undefined,extent:undefined,rendered:false,maxWind:undefined},
+    baseScan: {basin:undefined,storm:undefined,tick:undefined,extent:undefined,rendered:false,maxWind:undefined},
+    sar: {basin:undefined,storm:undefined,tick:undefined,extent:undefined,rendered:false,maxWind:undefined}
+};
+let stormImageryCloudsTab;
+let stormImageryIrBdTab;
+let stormImageryBaseScanTab;
+let stormImagerySarTab;
+let polarSatellitePanel;
+let polarSatelliteTab = 'clouds';
+let polarSatelliteOpen = false;
+let polarSatelliteSnapshot;
+let polarSatelliteCloudsTab;
+let polarSatelliteIrBdTab;
+let polarSatelliteBaseScanTab;
+let polarSatelliteSarTab;
+const STORM_IMAGERY_PANEL_WIDTH = 340;
+const STORM_IMAGERY_PANEL_HEIGHT = 470;
+const STORM_IMAGERY_RASTER_SIZE = 160;
+const STORM_IMAGERY_BASE_SCAN_RASTER_SIZE = 160;
+const STORM_IMAGERY_SAR_RASTER_SIZE = 128;
+// Keep the observation raster dimensions fixed. Compact tropical cyclones
+// instead receive a tighter geographic crop so more of those same pixels
+// describe the eye and eyewall.
+const STORM_IMAGERY_DEFAULT_MIN_EXTENT = 42;
+const STORM_IMAGERY_COMPACT_MIN_EXTENT = 30;
+const STORM_IMAGERY_SAR_DEFAULT_MIN_EXTENT = 52;
+const STORM_IMAGERY_SAR_COMPACT_MIN_EXTENT = 38;
+const STORM_IMAGERY_COMPACT_RMW_MIN = 2.5;
+const STORM_IMAGERY_COMPACT_RMW_MAX = 8;
+const STORM_POLAR_SATELLITE_TABS = ['clouds','irBd','baseScan','sar'];
+// Keep each frame responsive while a 512px product is sampled. The budget is
+// deliberately small because the field model is more expensive than the
+// later color upload; the panel can show progress while the task continues.
+const STORM_POLAR_RENDER_FRAME_BUDGET_MS = 8;
+// All phases yield after their time budget, rather than limiting cheap rows.
+// The ordinary panel keeps a light raster for continuous map interaction.
+// The polar-satellite action intentionally renders a larger product on demand
+// and caches it so each page remains crisp after it has been opened.
+const STORM_POLAR_SATELLITE_RASTER_SIZE = 512;
+
+function stormImageryIsTropicalType(type){
+    return type===TROP || type===SUBTROP || type===MONSOON;
+}
+
+function stormImageryMinimumExtent(descriptor,data,isSar){
+    let defaultExtent = isSar ? STORM_IMAGERY_SAR_DEFAULT_MIN_EXTENT :
+        STORM_IMAGERY_DEFAULT_MIN_EXTENT;
+    let compactExtent = isSar ? STORM_IMAGERY_SAR_COMPACT_MIN_EXTENT :
+        STORM_IMAGERY_COMPACT_MIN_EXTENT;
+    if(!descriptor) return defaultExtent;
+
+    let type = Number.isFinite(descriptor.type) ? descriptor.type :
+        data && Number.isFinite(data.type) ? data.type : undefined;
+    if(!stormImageryIsTropicalType(type)) return defaultExtent;
+
+    let rmwValues = [];
+    if(Number.isFinite(descriptor.rmwX)) rmwValues.push(descriptor.rmwX);
+    if(Number.isFinite(descriptor.rmwY)) rmwValues.push(descriptor.rmwY);
+    if(!rmwValues.length) return defaultExtent;
+
+    // Blend continuously from the compact-storm zoom to the legacy framing.
+    // This avoids a visible jump when a storm grows through the threshold.
+    let rmw = Math.max(...rmwValues);
+    let compactness = (STORM_IMAGERY_COMPACT_RMW_MAX-rmw)/
+        (STORM_IMAGERY_COMPACT_RMW_MAX-STORM_IMAGERY_COMPACT_RMW_MIN);
+    compactness = Math.max(0,Math.min(1,compactness));
+    return defaultExtent-(defaultExtent-compactExtent)*compactness;
+}
+
+function stormImageryTabEnabled(tab){
+    if(tab==='sar') return true;
+    let setting;
+    if(tab==='baseScan') return true;
+    else if(tab==='clouds' || tab==='irBd') setting = simSettings.showCloudsTab;
+    else return false;
+    // Undefined means the setting is still loading (or comes from an older
+    // save), so preserve the original enabled-by-default behavior. The
+    // explicit boolean/numeric false values both disable the tab.
+    return setting===undefined ? true : !!setting;
+}
+
+function stormImageryPanelEnabled(){
+    let setting = simSettings && simSettings.showScanTab;
+    return setting===undefined ? true : !!setting;
+}
+
+const POLAR_SATELLITE_INTERVAL_TICKS = ADVISORY_TICKS;
+
+function stormImageryVisibleTabs(){
+    return ['clouds','irBd','baseScan','sar'];
+}
+
+function normalizeStormImageryTab(){
+    let visibleTabs = stormImageryVisibleTabs();
+    if(visibleTabs.includes(stormImageryTab) &&
+        stormImageryTabEnabled(stormImageryTab)) return;
+    for(let tab of visibleTabs){
+        if(stormImageryTabEnabled(tab)){
+            stormImageryTab = tab;
+            return;
+        }
+    }
+}
+
+function updateStormImageryTabs(){
+    normalizeStormImageryTab();
+    let entries = [
+        ['clouds',stormImageryCloudsTab],
+        ['irBd',stormImageryIrBdTab],
+        ['baseScan',stormImageryBaseScanTab],
+        ['sar',stormImagerySarTab]
+    ];
+    let visibleTabs = stormImageryVisibleTabs();
+    let visible = entries.filter(entry=>entry[1] &&
+        visibleTabs.includes(entry[0]) && stormImageryTabEnabled(entry[0]));
+    if(visible.length){
+        let gap = 4;
+        let tabWidth = (STORM_IMAGERY_PANEL_WIDTH-16-gap*(visible.length-1))/visible.length;
+        for(let entry of entries){
+            let tab = entry[1];
+            if(!tab) continue;
+            let index = visible.findIndex(item=>item[1]===tab);
+            if(index<0){
+                tab.hide();
+                continue;
+            }
+            tab.relX = 8+index*(tabWidth+gap);
+            tab.width = tabWidth;
+            tab.show();
+        }
+    }
+    updateStormImageryPanel();
+}
+
+function stormImageryIsAvailable(storm){
+    return storm instanceof Storm && storm.current instanceof ActiveSystem &&
+        UI.viewBasin instanceof Basin && UI.viewBasin.viewingPresent() &&
+        storm.basin===UI.viewBasin;
+}
+
+function resetStormPolarSatelliteRasters(){
+    stormPolarSatelliteRenderJob = undefined;
+    stormPolarCloudTemperatureCache = undefined;
+    stormPolarRasterState = {};
+    for(let tab of STORM_POLAR_SATELLITE_TABS)
+        stormPolarRasterState[tab] = {
+            basin: undefined,
+            storm: undefined,
+            tick: undefined,
+            extent: undefined,
+            rendered: false,
+            maxWind: undefined
+        };
+}
+
+function ensureStormPolarSatelliteRaster(tab){
+    if(tab==='irBd'){
+        if(!stormPolarIrBdRaster ||
+            stormPolarIrBdRaster.width!==STORM_POLAR_SATELLITE_RASTER_SIZE ||
+            stormPolarIrBdRaster.height!==STORM_POLAR_SATELLITE_RASTER_SIZE)
+            stormPolarIrBdRaster = createImage(STORM_POLAR_SATELLITE_RASTER_SIZE,
+                STORM_POLAR_SATELLITE_RASTER_SIZE);
+        return stormPolarIrBdRaster;
+    }
+    if(tab==='baseScan'){
+        if(!stormPolarBaseScanRaster ||
+            stormPolarBaseScanRaster.width!==STORM_POLAR_SATELLITE_RASTER_SIZE ||
+            stormPolarBaseScanRaster.height!==STORM_POLAR_SATELLITE_RASTER_SIZE)
+            stormPolarBaseScanRaster = createImage(STORM_POLAR_SATELLITE_RASTER_SIZE,
+                STORM_POLAR_SATELLITE_RASTER_SIZE);
+        return stormPolarBaseScanRaster;
+    }
+    if(tab==='sar'){
+        if(!stormPolarSarRaster ||
+            stormPolarSarRaster.width!==STORM_POLAR_SATELLITE_RASTER_SIZE ||
+            stormPolarSarRaster.height!==STORM_POLAR_SATELLITE_RASTER_SIZE)
+            stormPolarSarRaster = createImage(STORM_POLAR_SATELLITE_RASTER_SIZE,
+                STORM_POLAR_SATELLITE_RASTER_SIZE);
+        return stormPolarSarRaster;
+    }
+    if(!stormPolarCloudRaster ||
+        stormPolarCloudRaster.width!==STORM_POLAR_SATELLITE_RASTER_SIZE ||
+        stormPolarCloudRaster.height!==STORM_POLAR_SATELLITE_RASTER_SIZE)
+        stormPolarCloudRaster = createImage(STORM_POLAR_SATELLITE_RASTER_SIZE,
+            STORM_POLAR_SATELLITE_RASTER_SIZE);
+    return stormPolarCloudRaster;
+}
+
+function stormPolarSatelliteRasterNeedsUpdate(tab,basin,storm,tick,extent){
+    let state = stormPolarRasterState[tab];
+    return !state || !state.rendered || state.basin!==basin ||
+        state.storm!==storm || state.tick!==tick || state.extent!==extent;
+}
+
+function stormPolarSatelliteEyeCenter(system){
+    if(!system || !Number.isFinite(system.x) || !Number.isFinite(system.y))
+        return undefined;
+
+    // The infrared cloud-top field places the apparent eye downshear. Keep
+    // this helper as the single source for the Polar product's eye location so
+    // the eye-temperature readout samples the same feature that is rendered.
+    let shearAngle = Number.isFinite(system.shearAngle) ? system.shearAngle : 0;
+    let shearOffset = Number.isFinite(system.shearOffset) ?
+        system.shearOffset*1.8 : 0;
+    return {
+        x: system.x+Math.cos(shearAngle)*shearOffset,
+        y: system.y+Math.sin(shearAngle)*shearOffset
+    };
+}
+
+function stormPolarSatelliteEyeCoverage(system,x,y,z){
+    if(!system || !Number.isFinite(system.x) || !Number.isFinite(system.y) ||
+        !Number.isFinite(system.rmwX) || !Number.isFinite(system.rmwY) ||
+        system.rmwX<=0 || system.rmwY<=0) return 0;
+
+    let eyeCenter = stormPolarSatelliteEyeCenter(system);
+    if(!eyeCenter) return 0;
+    let dx = (x-eyeCenter.x)/system.rmwX;
+    let dy = (y-eyeCenter.y)/system.rmwY;
+    let radius = Math.hypot(dx,dy);
+    if(radius>2.8) return 0;
+
+    let phase = Number.isFinite(system.phase) ? system.phase : 0;
+    let hemisphere = system.hemisphere<0 ? -1 : 1;
+    let angle = Math.atan2(dy,dx);
+    let spiralAngle = angle+hemisphere*(
+        -0.72*Math.log(radius+0.38)+z*0.016+
+        0.45*Math.sin(z*0.016)/(1+radius*0.16)
+    );
+    let tx = radius*Math.cos(spiralAngle);
+    let ty = radius*Math.sin(spiralAngle);
+    let broad = typeof radarEvolvingNoise==='function' ?
+        radarEvolvingNoise(tx*0.95,ty*0.95,z,phase) : 0.5;
+    let cells = typeof radarEvolvingNoise==='function' ?
+        radarEvolvingNoise(tx*3.6,ty*3.6,z,phase+8.3) : 0.5;
+    // Match the slight non-circularity and softened boundary of the ordinary
+    // cloud product so switching to Polar HD does not reintroduce a perfect
+    // geometric hole.
+    let eyeShape = 1+
+        0.055*(broad-0.5)+
+        0.035*(cells-0.5)+
+        0.025*Math.sin(2*spiralAngle+phase)+
+        0.018*Math.sin(3*spiralAngle-phase);
+    let warpedRadius = radius/Math.max(0.84,eyeShape);
+
+    let intensity = typeof simulatedIntensityLevel==='function' ?
+        simulatedIntensityLevel(system) :
+        Math.max(0,Math.min(1,Number.isFinite(system.intensity) ?
+            system.intensity : Number.isFinite(system.strength) ? system.strength : 0));
+    let eyeScale = typeof simulatedCloudEyeScale==='function' ?
+        simulatedCloudEyeScale(system) : 0.58;
+    let innerWeight = Number.isFinite(system.eyewallInnerWeight) ?
+        Math.max(0,Math.min(1,system.eyewallInnerWeight)) : 1;
+    let outerWeight = Number.isFinite(system.eyewallOuterWeight) ?
+        Math.max(0,Math.min(1,system.eyewallOuterWeight)) : 0;
+    let failure = typeof simulatedEyewallFailureLevel==='function' ?
+        simulatedEyewallFailureLevel(system) :
+        Number.isFinite(system.eyewallFailure) ?
+            Math.max(0,Math.min(1,system.eyewallFailure)) : 0;
+    let outerEyeRadius = Number.isFinite(system.eyewallOuterRadius) ?
+        system.eyewallOuterRadius : 1.55;
+    let innerRadius = (0.58-0.06*intensity)*eyeScale;
+    let outerRadius = (0.61-0.05*intensity)*
+        Math.min(1.3+0.7*failure,outerEyeRadius)*eyeScale;
+    if(innerRadius<=0 || outerRadius<=0) return 0;
+
+    // Share the bounded clear-eye response with the ordinary cloud and
+    // microwave products. The outer wall remains available for the HD
+    // product's double-eyewall texture, but it cannot turn the whole moat into
+    // a giant clear eye or disappear at the cycle boundary.
+    if(typeof simulatedReplacementEyeCoverage==='function')
+        return simulatedReplacementEyeCoverage(
+            system,warpedRadius,innerRadius,outerRadius
+        );
+    // Keep a compatibility fallback for an older standalone UI bundle.
+    let coverage = innerWeight*Math.exp(-Math.pow(
+        warpedRadius/innerRadius,3.2
+    ))+
+        outerWeight*Math.exp(-Math.pow(warpedRadius/outerRadius,3.2));
+    return Math.max(0,Math.min(1,coverage));
+}
+
+function stormPolarSatelliteEyeClearance(utility,x,y,z,temperature){
+    if(!Number.isFinite(temperature)) return temperature;
+    let systems = utility && Array.isArray(utility.simulatedSystems) ?
+        utility.simulatedSystems : [];
+    let enhancedTemperature = temperature;
+    for(let system of systems){
+        let eyeFillFactor = Number.isFinite(system.eyeFillFactor) ?
+            Math.max(0,Math.min(1,system.eyeFillFactor)) : 0;
+        let eyewallFailure = typeof simulatedEyewallFailureLevel==='function' ?
+            simulatedEyewallFailureLevel(system) :
+            Number.isFinite(system.eyewallFailure) ?
+                Math.max(0,Math.min(1,system.eyewallFailure)) : 0;
+        let eyeStructureAvailability = (1-0.92*eyeFillFactor)*
+            (1-0.65*eyewallFailure);
+        let visibility = typeof simulatedEyeVisibilityFactor==='function' ?
+            simulatedEyeVisibilityFactor(system) :
+            Math.max(0,Math.min(1,(Number.isFinite(system.eyeFactor) ?
+                system.eyeFactor : 0)*eyeStructureAvailability));
+        if(visibility<=0) continue;
+
+        let coverage = stormPolarSatelliteEyeCoverage(system,x,y,z);
+        if(coverage<=0) continue;
+
+        let eyeTemperatureTarget;
+        let clearTemperature;
+        if(typeof simulatedEyeTemperatureTarget==='function'){
+            let sst = utility && typeof utility.field==='function' ?
+                utility.field('SST',x,y,z) : 26;
+            if(!Number.isFinite(sst)) sst = 26;
+            let clearMinimum = typeof SIMULATED_CLOUD_CLEAR_BT_MIN==='number' ?
+                SIMULATED_CLOUD_CLEAR_BT_MIN : -2;
+            let clearMaximum = typeof SIMULATED_CLOUD_CLEAR_BT_MAX==='number' ?
+                SIMULATED_CLOUD_CLEAR_BT_MAX : 50;
+            clearTemperature = Math.max(clearMinimum,Math.min(
+                clearMaximum,sst-1
+            ));
+            eyeTemperatureTarget = simulatedEyeTemperatureTarget(
+                system,clearTemperature
+            );
+        }else{
+            let sst = utility && typeof utility.field==='function' ?
+                utility.field('SST',x,y,z) : 26;
+            if(!Number.isFinite(sst)) sst = 26;
+            clearTemperature = sst-1;
+        }
+
+        let eyewallMaturity = Number.isFinite(system.eyewallFactor) ?
+            Math.max(0,Math.min(1,system.eyewallFactor)) : visibility;
+        // A polar footprint resolves the clear center more completely than
+        // the ordinary cloud raster, but the gain remains proportional to a
+        // real eye and grows with eyewall organization. Closed/failed eyes
+        // therefore keep the same modeled cloud filling.
+        let resolutionGain = (0.12+0.18*eyewallMaturity)*
+            eyeStructureAvailability;
+        let highResolutionVisibility = Math.min(1,
+            visibility*(1+resolutionGain));
+        let ordinaryEye = Math.pow(Math.max(0,1-visibility*coverage),1.15);
+        let polarEye = Math.pow(Math.max(0,
+            1-highResolutionVisibility*coverage),1.15);
+        let relativeClearance = ordinaryEye>1e-6 ?
+            Math.max(0,Math.min(1,1-polarEye/ordinaryEye)) : 0;
+        // Preserve some cloud-top texture in the center. The satellite
+        // product should show a clearer eye, not replace the simulated field
+        // with an artificially uniform warm disk.
+        let resolvedClearance = relativeClearance*
+            (0.58+0.22*eyewallMaturity)*eyeStructureAvailability;
+        // Polar resolution may expose more of the clear eye. Move toward the
+        // same local SST/radiative target used by the underlying cloud field
+        // so warm-water eyes share its empirical 28 C ceiling.
+        let clearanceTarget = Number.isFinite(eyeTemperatureTarget) ?
+            eyeTemperatureTarget : Number.isFinite(clearTemperature) ?
+                clearTemperature : 25;
+        enhancedTemperature += (clearanceTarget-enhancedTemperature)*
+            resolvedClearance;
+        // Keep the high-resolution eye on the same target as the ordinary
+        // cloud field inside the eye core only; surrounding clear sky keeps
+        // its normal surface-window temperature.
+        if(Number.isFinite(eyeTemperatureTarget)){
+            let eyeCore = coverage*coverage;
+            enhancedTemperature = enhancedTemperature*(1-eyeCore)+
+                Math.min(enhancedTemperature,eyeTemperatureTarget)*eyeCore;
+        }
+    }
+    let minimumTemperature = typeof SIMULATED_CLOUD_BT_MIN==='number' ?
+        SIMULATED_CLOUD_BT_MIN : -100;
+    let maximumTemperature = typeof SIMULATED_CLOUD_BT_MAX==='number' ?
+        SIMULATED_CLOUD_BT_MAX : 50;
+    return Math.max(minimumTemperature,
+        Math.min(maximumTemperature,enhancedTemperature));
+}
+
+function stormPolarSatelliteDenoiseProfile(tab){
+    // These are value-domain thresholds, not blur radii. A small local blend
+    // attenuates pixel noise, while the edge threshold rejects neighbors on
+    // the other side of an eye/eyewall or wind-field gradient.
+    if(tab==='sar') return {
+        impulse:3.2,
+        edge:14,
+        localBlend:0.22,
+        outlierBlend:0.78
+    };
+    if(tab==='baseScan') return {
+        impulse:7,
+        edge:24,
+        localBlend:0.24,
+        outlierBlend:0.80
+    };
+    if(tab==='irBd') return {
+        impulse:4.5,
+        edge:11,
+        localBlend:0.16,
+        outlierBlend:0.72
+    };
+    return {
+        impulse:3.2,
+        edge:15,
+        localBlend:0.24,
+        outlierBlend:0.80
+    };
+}
+
+function stormPolarSatelliteDenoiseValues(values,width,height,tab,
+    startRow=0,endRow=height,source){
+    let profile = stormPolarSatelliteDenoiseProfile(tab);
+    if(!source) source = new Float32Array(values);
+    startRow = Math.max(0,Math.min(height,startRow));
+    endRow = Math.max(startRow,Math.min(height,endRow));
+    let spatialWeights = [1,2,1,2,4,2,1,2,1];
+    let neighbors = new Float64Array(9);
+    for(let row=startRow;row<endRow;row++){
+        for(let col=0;col<width;col++){
+            let index = row*width+col;
+            let center = source[index];
+            let neighborCount = 0;
+            for(let dy=-1;dy<=1;dy++){
+                let sourceRow = Math.max(0,Math.min(height-1,row+dy));
+                for(let dx=-1;dx<=1;dx++){
+                    let sourceCol = Math.max(0,Math.min(width-1,col+dx));
+                    let value = source[sourceRow*width+sourceCol];
+                    if(Number.isFinite(value)) neighbors[neighborCount++] = value;
+                }
+            }
+            if(!neighborCount){
+                values[index] = center;
+                continue;
+            }
+
+            // Missing samples are filled from the nearest local field, while
+            // finite samples retain their original edge-aware treatment.
+            if(!Number.isFinite(center)){
+                let total = 0;
+                for(let i=0;i<neighborCount;i++) total += neighbors[i];
+                values[index] = total/neighborCount;
+                continue;
+            }
+
+            // Reuse nine slots instead of allocating/sorting arrays per pixel.
+            for(let i=1;i<neighborCount;i++){
+                let value = neighbors[i];
+                let j = i-1;
+                while(j>=0 && neighbors[j]>value){
+                    neighbors[j+1] = neighbors[j];
+                    j--;
+                }
+                neighbors[j+1] = value;
+            }
+            let median = neighbors[Math.floor(neighborCount/2)];
+            let medianDistance = Math.abs(center-median);
+            let total = center*4;
+            let totalWeight = 4;
+            let neighborIndex = 0;
+            for(let dy=-1;dy<=1;dy++){
+                let sourceRow = Math.max(0,Math.min(height-1,row+dy));
+                for(let dx=-1;dx<=1;dx++){
+                    let sourceCol = Math.max(0,Math.min(width-1,col+dx));
+                    let value = source[sourceRow*width+sourceCol];
+                    let spatialWeight = spatialWeights[neighborIndex++];
+                    if(!Number.isFinite(value) ||
+                        (dx===0 && dy===0)) continue;
+                    let difference = Math.abs(value-center);
+                    // Gaussian range weighting keeps small texture changes
+                    // but quickly removes cross-edge influence.
+                    let rangeWeight = Math.exp(-Math.pow(
+                        difference/profile.edge,2
+                    ));
+                    total += value*spatialWeight*rangeWeight;
+                    totalWeight += spatialWeight*rangeWeight;
+                }
+            }
+            let local = total/totalWeight;
+            let target = local;
+            let blend = profile.localBlend;
+            if(medianDistance>profile.impulse){
+                // Require several neighbors to agree before treating a
+                // sample as a speckle. This leaves narrow real boundaries
+                // intact and rejects isolated hot/cold/gust pixels.
+                let support = 0;
+                for(let i=0;i<neighborCount;i++)
+                    if(Math.abs(neighbors[i]-median)<=profile.impulse) support++;
+                if(support>=6){
+                    target = median;
+                    blend = profile.outlierBlend;
+                }
+            }
+            values[index] = center+(target-center)*blend;
+        }
+    }
+}
+
+function stormPolarSatelliteProductFunctions(tab){
+    let isSar = tab==='sar';
+    let isIrBd = tab==='irBd';
+    let isBaseScan = tab==='baseScan';
+    return {
+        isSar,
+        isBaseScan,
+        valueFunc: isSar ? simulatedSarWindSpeed :
+            isBaseScan ? simulatedBaseScanBrightnessTemperature :
+            isIrBd ? simulatedIrBdTemperature : simulatedCloudTemperature,
+        colorFunc: isSar ? simulatedSarColor :
+            isBaseScan ? simulatedBaseScanColor :
+            isIrBd ? simulatedIrBdColor : simulatedCloudColor,
+        rgbaFunc: isSar ? simulatedSarRgba :
+            isBaseScan ? simulatedBaseScanRgba :
+            isIrBd ? simulatedIrBdRgba : simulatedCloudRgba
+    };
+}
+
+function stormPolarSatelliteRenderNow(){
+    return typeof performance!=='undefined' &&
+        performance.now instanceof Function ? performance.now() : Date.now();
+}
+
+function stormPolarSatelliteRenderJobMatches(job,raster,tab,basin,storm,
+    centerX,centerY,extent,tick){
+    return job && job.raster===raster && job.tab===tab &&
+        job.basin===basin && job.storm===storm &&
+        job.centerX===centerX && job.centerY===centerY &&
+        job.extent===extent && job.tick===tick;
+}
+
+function clearStormPolarSatelliteRaster(raster){
+    raster.loadPixels();
+    raster.pixels.fill(0);
+    raster.updatePixels();
+}
+
+function stormImagerySampleInBounds(x,y){
+    return x>=0 && x<=WIDTH-1 && y>=0 && y<=HEIGHT-1;
+}
+
+function createStormPolarSatelliteRenderJob(raster,tab,utility,basin,centerX,
+    centerY,extent,tick){
+    clearStormPolarSatelliteRaster(raster);
+    let product = stormPolarSatelliteProductFunctions(tab);
+    let cloudTemperatureCache;
+    if(stormImageryUsesCloudTemperature(tab)){
+        cloudTemperatureCache = ensureStormCloudTemperatureCache(
+            stormPolarCloudTemperatureCache,basin,utility.storm,tick,
+            centerX,centerY,extent,raster.width,raster.height
+        );
+        stormPolarCloudTemperatureCache = cloudTemperatureCache;
+        if(!cloudTemperatureCache.polarValues){
+            cloudTemperatureCache.polarValues = new Float32Array(raster.width*raster.height);
+            cloudTemperatureCache.polarValues.fill(NaN);
+        }
+    }
+    // Coordinates depend on the viewport, not the pixel's field value.
+    let sampleXs = new Float64Array(raster.width);
+    let sampleYs = new Float64Array(raster.height);
+    for(let col=0;col<raster.width;col++){
+        let sampleX = centerX+((col+0.5)/raster.width-0.5)*2*extent;
+        sampleXs[col] = product.isBaseScan ? sampleX :
+            constrain(sampleX,0,WIDTH-1);
+    }
+    for(let row=0;row<raster.height;row++){
+        let sampleY = centerY+((row+0.5)/raster.height-0.5)*2*extent;
+        sampleYs[row] = product.isBaseScan ? sampleY :
+            constrain(sampleY,0,HEIGHT-1);
+    }
+    return {
+        raster,
+        tab,
+        utility,
+        basin,
+        storm: utility.storm,
+        centerX,
+        centerY,
+        extent,
+        tick,
+        width: raster.width,
+        height: raster.height,
+        product,
+        cloudTemperatureCache,
+        sampleXs,
+        sampleYs,
+        values: new Float32Array(raster.width*raster.height),
+        source: undefined,
+        denoiseEnabled: tab==='baseScan' || tab==='sar',
+        phase: 'sample',
+        nextRow: 0,
+        pixelsLoaded: false,
+        maxWind: undefined,
+        done: false
+    };
+}
+
+function sampleStormPolarSatelliteRow(job,row){
+    let product = job.product;
+    let utility = job.utility;
+    for(let col=0;col<job.width;col++){
+        let sampleX = job.sampleXs[col];
+        let screenY = job.sampleYs[row];
+        // The panel center and cached imagery descriptors already use the
+        // hemisphere-normalized coordinate space expected by the field model.
+        // Flipping this value again moved every Southern Hemisphere sample
+        // away from the selected cyclone and left the product looking empty.
+        let sampleY = screenY;
+        utility.sampleX = sampleX;
+        utility.sampleY = sampleY;
+        utility.sampleZ = job.tick;
+        let value;
+        let sampleIndex = row*job.width+col;
+        if(product.isBaseScan &&
+            !stormImagerySampleInBounds(sampleX,sampleY)){
+            // The crop can extend beyond the basin near its edges. Treat that
+            // area as clear sky instead of repeating the nearest map-edge
+            // sample across a row or column.
+            job.values[sampleIndex] = SIMULATED_BASE_SCAN_BT_MAX;
+            continue;
+        }
+        if(job.cloudTemperatureCache &&
+            Number.isFinite(job.cloudTemperatureCache.polarValues[sampleIndex])){
+            job.values[sampleIndex] = job.cloudTemperatureCache.polarValues[sampleIndex];
+            continue;
+        }
+        if(job.cloudTemperatureCache){
+            value = job.cloudTemperatureCache.values[sampleIndex];
+            if(!Number.isFinite(value)){
+                value = simulatedCloudTemperature(
+                    utility,sampleX,sampleY,job.tick
+                );
+                job.cloudTemperatureCache.values[sampleIndex] = value;
+            }
+        }else{
+            value = product.valueFunc(utility,sampleX,sampleY,job.tick);
+        }
+        if(!product.isSar && !product.isBaseScan)
+            value = stormPolarSatelliteEyeClearance(
+                utility,sampleX,sampleY,job.tick,value
+            );
+        job.values[sampleIndex] = value;
+        if(job.cloudTemperatureCache)
+            job.cloudTemperatureCache.polarValues[sampleIndex] = value;
+    }
+}
+
+function colorStormPolarSatelliteRow(job,row){
+    let product = job.product;
+    let rgbaScratch = product.rgbaFunc ? [0,0,0,0] : undefined;
+    for(let col=0;col<job.width;col++){
+        let value = job.values[row*job.width+col];
+        if(product.isSar && Number.isFinite(value))
+            job.maxWind = job.maxWind===undefined ? value :
+                Math.max(job.maxWind,value);
+        let index = 4*(row*job.width+col);
+        if(Number.isFinite(value) && product.rgbaFunc){
+            let rgba = product.rgbaFunc(value,rgbaScratch);
+            job.raster.pixels[index] = rgba[0];
+            job.raster.pixels[index+1] = rgba[1];
+            job.raster.pixels[index+2] = rgba[2];
+            job.raster.pixels[index+3] = rgba[3];
+        }else{
+            let c = Number.isFinite(value) ? product.colorFunc(value) :
+                (product.isSar ? color(0,0,0,0) : color(128,128,128,255));
+            job.raster.pixels[index] = red(c);
+            job.raster.pixels[index+1] = green(c);
+            job.raster.pixels[index+2] = blue(c);
+            job.raster.pixels[index+3] = alpha(c);
+        }
+    }
+}
+
+function advanceStormPolarSatelliteRenderJob(job){
+    let frameStart = stormPolarSatelliteRenderNow();
+    let rowsProcessed = 0;
+    while(true){
+        let withinBudget = rowsProcessed===0 ||
+            (stormPolarSatelliteRenderNow()-frameStart<
+                    STORM_POLAR_RENDER_FRAME_BUDGET_MS);
+        if(!withinBudget) return false;
+
+        if(job.phase==='sample'){
+            if(job.nextRow<job.height){
+                let queryCached = job.basin && job.basin.env &&
+                    typeof job.basin.env.beginQueryCache==='function';
+                if(queryCached) job.basin.env.beginQueryCache();
+                try{
+                    sampleStormPolarSatelliteRow(job,job.nextRow++);
+                }finally{
+                    if(queryCached) job.basin.env.endQueryCache();
+                }
+                rowsProcessed++;
+                continue;
+            }
+            if(job.denoiseEnabled){
+                // Keep a stable source image while each denoise chunk is
+                // spread over later frames; otherwise neighboring rows would
+                // use a mix of old and already-filtered values.
+                job.source = new Float32Array(job.values);
+                job.phase = 'denoise';
+            }else{
+                // Clouds and IR-BD deliberately retain the native simulated
+                // texture. Treating their fine cloud structure as speckle
+                // made the polar image look like a soft synthetic disk.
+                job.phase = 'color';
+                job.nextRow = 0;
+                job.raster.loadPixels();
+                job.pixelsLoaded = true;
+            }
+            if(job.denoiseEnabled) job.nextRow = 0;
+            continue;
+        }
+
+        if(job.phase==='denoise'){
+            if(job.nextRow<job.height){
+                let startRow = job.nextRow;
+                stormPolarSatelliteDenoiseValues(
+                    job.values,job.width,job.height,job.tab,
+                    startRow,startRow+1,job.source
+                );
+                job.nextRow++;
+                rowsProcessed++;
+                continue;
+            }
+            job.phase = 'color';
+            job.nextRow = 0;
+            job.raster.loadPixels();
+            job.pixelsLoaded = true;
+            continue;
+        }
+
+        if(job.phase==='color'){
+            if(job.nextRow<job.height){
+                colorStormPolarSatelliteRow(job,job.nextRow++);
+                rowsProcessed++;
+                continue;
+            }
+            job.raster.updatePixels();
+            job.phase = 'done';
+            job.done = true;
+            return true;
+        }
+
+        return job.done;
+    }
+}
+
+function renderStormPolarSatelliteRaster(raster,tab,utility,basin,centerX,centerY,extent,tick){
+    if(!stormPolarSatelliteRenderJobMatches(
+        stormPolarSatelliteRenderJob,raster,tab,basin,utility.storm,
+        centerX,centerY,extent,tick
+    ))
+        stormPolarSatelliteRenderJob = createStormPolarSatelliteRenderJob(
+            raster,tab,utility,basin,centerX,centerY,extent,tick
+        );
+    return advanceStormPolarSatelliteRenderJob(stormPolarSatelliteRenderJob);
+}
+
+function stormPolarSatelliteRenderProgress(job){
+    if(!job) return 0;
+    let fraction = job.nextRow/job.height;
+    if(job.phase==='sample') return (job.denoiseEnabled ? 0.68 : 0.86)*fraction;
+    if(!job.denoiseEnabled && job.phase==='color') return 0.86+0.14*fraction;
+    if(job.phase==='denoise') return 0.68+0.20*fraction;
+    if(job.phase==='color') return 0.88+0.12*fraction;
+    return job.done ? 1 : 0;
+}
+
+function renderStormPolarSatelliteLoading(imageX,imageY,imageSize,job){
+    let labels = {
+        clouds:'Clouds',
+        irBd:'IR-BD',
+        baseScan:'Base scan',
+        sar:'SAR wind'
+    };
+    let progress = stormPolarSatelliteRenderProgress(job);
+    push();
+    noStroke();
+    fill(0,155);
+    rect(imageX,imageY,imageSize,imageSize);
+    fill(255);
+    textAlign(CENTER,CENTER);
+    textSize(13);
+    text(labels[job.tab]+' · '+round(progress*100)+'%',
+        imageX+imageSize/2,imageY+imageSize/2-8);
+    fill(255,70);
+    rect(imageX+imageSize*0.18,imageY+imageSize/2+12,
+        imageSize*0.64,5);
+    fill(120,220,255);
+    rect(imageX+imageSize*0.18,imageY+imageSize/2+12,
+        imageSize*0.64*progress,5);
+    pop();
+}
+
+function openPolarSatelliteImagery(){
+    if(!stormImageryPanelEnabled() || !stormImageryIsAvailable(selectedStorm)) return;
+    let basin = UI.viewBasin;
+    let snapshotTick = floor(basin.tick/POLAR_SATELLITE_INTERVAL_TICKS)*
+        POLAR_SATELLITE_INTERVAL_TICKS;
+    let snapshotData = selectedStorm.getStormDataByTick(snapshotTick,true);
+    // A newly formed cyclone may not have a six-hour advisory record yet.
+    // Capture its live position in that one case so the button still works.
+    if(!snapshotData){
+        snapshotTick = basin.tick;
+        snapshotData = selectedStorm.current;
+    }
+    if(!snapshotData || !snapshotData.pos) return;
+    polarSatelliteSnapshot = {
+        basin,
+        storm: selectedStorm,
+        tick: snapshotTick,
+        data: snapshotData
+    };
+    polarSatelliteOpen = true;
+    polarSatelliteTab = 'clouds';
+    resetStormPolarSatelliteRasters();
+    updatePolarSatellitePanel();
+}
+
+function polarSatelliteVisibleTabs(){
+    return ['clouds','irBd','baseScan','sar'].filter(tab=>
+        stormImageryTabEnabled(tab)
+    );
+}
+
+function normalizePolarSatelliteTab(){
+    let visibleTabs = polarSatelliteVisibleTabs();
+    if(visibleTabs.includes(polarSatelliteTab)) return;
+    polarSatelliteTab = visibleTabs.length ? visibleTabs[0] : 'sar';
+}
+
+function updatePolarSatelliteTabs(){
+    let entries = [
+        ['clouds',polarSatelliteCloudsTab],
+        ['irBd',polarSatelliteIrBdTab],
+        ['baseScan',polarSatelliteBaseScanTab],
+        ['sar',polarSatelliteSarTab]
+    ];
+    let visibleTabs = polarSatelliteVisibleTabs();
+    let visible = entries.filter(entry=>entry[1] &&
+        visibleTabs.includes(entry[0]));
+    if(!visible.length) return;
+    let gap = 4;
+    let tabWidth = (STORM_IMAGERY_PANEL_WIDTH-16-
+        gap*(visible.length-1))/visible.length;
+    for(let entry of entries){
+        let tab = entry[1];
+        if(!tab) continue;
+        let index = visible.findIndex(item=>item[1]===tab);
+        if(index<0){
+            tab.hide();
+            continue;
+        }
+        tab.relX = 8+index*(tabWidth+gap);
+        tab.width = tabWidth;
+        tab.show();
+    }
+}
+
+function updatePolarSatellitePanel(){
+    if(!polarSatellitePanel) return;
+    normalizePolarSatelliteTab();
+    updatePolarSatelliteTabs();
+    let hiddenByModal = typeof helpBox !== 'undefined' && helpBox.showing;
+    let hiddenByInfo = panel_timeline_container && panel_timeline_container.showing;
+    let hasSnapshot = polarSatelliteSnapshot &&
+        polarSatelliteSnapshot.basin===UI.viewBasin &&
+        polarSatelliteSnapshot.storm===selectedStorm;
+    if(polarSatelliteOpen && stormImageryPanelEnabled() && hasSnapshot &&
+        stormImageryIsAvailable(selectedStorm) &&
+        !hiddenByModal && !hiddenByInfo)
+        polarSatellitePanel.show();
+    else
+        polarSatellitePanel.hide();
+}
+
+function updateStormImageryPanel(){
+    if(!stormImageryPanel) return;
+    // This setting controls the storm-imagery interface as a whole. Keeping
+    // the panel open with only Base scan and SAR made "Disabled" look as if
+    // it merely hid two tabs.
+    if(!stormImageryPanelEnabled() || !stormImageryTabEnabled('clouds')){
+        stormImageryPanel.hide();
+        updatePolarSatellitePanel();
+        return;
+    }
+    normalizeStormImageryTab();
+    let hiddenByModal = typeof helpBox !== 'undefined' && helpBox.showing;
+    let hiddenByInfo = panel_timeline_container && panel_timeline_container.showing;
+    let hasEnabledTab = stormImageryTabEnabled('clouds') ||
+        stormImageryTabEnabled('baseScan') || stormImageryTabEnabled('sar');
+    if(stormImageryPanelEnabled() && stormImageryIsAvailable(selectedStorm) && hasEnabledTab &&
+        !hiddenByModal && !hiddenByInfo)
+        stormImageryPanel.show();
+    else
+        stormImageryPanel.hide();
+    updatePolarSatellitePanel();
+}
+
+function ensureStormImageryRaster(size){
+    if(!stormImageryRaster || stormImageryRaster.width!==size ||
+        stormImageryRaster.height!==size){
+        stormImageryRaster = createImage(size,size);
+    }
+    return stormImageryRaster;
+}
+
+function stormCloudTemperatureCacheMatches(cache,basin,storm,tick,
+    centerX,centerY,extent,width,height){
+    return !!cache && cache.basin===basin && cache.storm===storm &&
+        cache.tick===tick && cache.centerX===centerX &&
+        cache.centerY===centerY && cache.extent===extent &&
+        cache.width===width && cache.height===height;
+}
+
+function ensureStormCloudTemperatureCache(cache,basin,storm,tick,
+    centerX,centerY,extent,width,height){
+    if(stormCloudTemperatureCacheMatches(
+        cache,basin,storm,tick,centerX,centerY,extent,width,height
+    )) return cache;
+    let values = new Float64Array(width*height);
+    values.fill(NaN);
+    return {
+        basin,
+        storm,
+        tick,
+        centerX,
+        centerY,
+        extent,
+        width,
+        height,
+        values
+    };
+}
+
+function stormImageryUsesCloudTemperature(tab){
+    return tab==='clouds' || tab==='irBd';
+}
+
+function stormImagerySarMaxWindLabel(maxWind){
+    if(!Number.isFinite(maxWind)) return 'Max Wind: --';
+    let knots = constrain(maxWind,SIMULATED_SAR_WIND_MIN,
+        SIMULATED_SAR_WIND_MAX);
+    let metersPerSecond = knots/SIMULATED_SAR_KNOTS_PER_MS;
+    return 'Max Wind: '+Math.round(metersPerSecond)+' m/s · '+
+        Math.round(knots)+' knots';
+}
+
+function renderStormSarOverlay(imageX,imageY,imageSize,maxWind){
+    let centerX = imageX+imageSize/2;
+    let centerY = imageY+imageSize/2;
+
+    push();
+    // Keep the geolocated-product grid without imposing a satellite swath
+    // mask; this panel presents the complete simulated wind field.
+    stroke(255,135);
+    strokeWeight(0.55);
+    for(let i=1;i<6;i++){
+        let p = imageX+imageSize*i/6;
+        line(p,imageY,p,imageY+imageSize);
+        p = imageY+imageSize*i/6;
+        line(imageX,p,imageX+imageSize,p);
+    }
+    stroke(255,185);
+    strokeWeight(0.7);
+    line(centerX-5,centerY,centerX+5,centerY);
+    line(centerX,centerY-5,centerX,centerY+5);
+
+    noStroke();
+    fill(255,235);
+    textAlign(LEFT,CENTER);
+    textSize(9);
+    text('SAR  SURFACE WIND',imageX+10,imageY+12.5);
+    textAlign(RIGHT,CENTER);
+    textSize(8);
+    text(stormImagerySarMaxWindLabel(maxWind),imageX+imageSize-10,
+        imageY+12.5);
+    pop();
+}
+
+const STORM_IMAGERY_BASE_SCAN_COLOR_LEVELS =
+    [100,120,140,152,168,180,192,210,228,246,264,282,300];
+const STORM_IMAGERY_SAR_COLOR_LEVELS =
+    [0,17,34,54,75,95,115,136,155,170,210,270,330,400,440];
+
+function stormImageryDrawGradient(x,y,w,start,end,colorFunc){
+    for(let i=0;i<w;i++){
+        let value = map(i,0,w-1,start,end);
+        fill(colorFunc(value));
+        rect(x+i,y,1,8);
+    }
+    noFill();
+    stroke(COLORS.UI.text);
+    rect(x,y,w,8);
+}
+
+function stormImageryDrawTickMarks(x,y,w,start,end,values){
+    stroke(COLORS.UI.text);
+    strokeWeight(1);
+    for(let value of values){
+        let tickX = map(value,start,end,x,x+w,true);
+        line(tickX,y+8,tickX,y+12);
+    }
+}
+
+function stormImageryDrawScaleLabels(x,y,w,start,end,ticks,labelY){
+    noStroke();
+    fill(COLORS.UI.text);
+    textSize(7);
+    let candidates = [];
+    for(let i=0;i<ticks.length;i++){
+        let tick = ticks[i];
+        let tickX = map(tick.value,start,end,x,x+w,true);
+        let alignment = i===0 ? LEFT : i===ticks.length-1 ? RIGHT : CENTER;
+        let label = String(tick.label);
+        let labelWidth = textWidth(label);
+        let left = alignment===LEFT ? tickX : alignment===RIGHT ?
+            tickX-labelWidth : tickX-labelWidth/2;
+        candidates.push({tick,tickX,alignment,left,
+            right:left+labelWidth,index:i});
+    }
+
+    // Keep every tick mark, but only draw labels whose measured bounds fit.
+    // SAR has two short side-by-side bars, so rendering every category label
+    // makes the values unreadable even though the tick positions themselves
+    // remain useful.
+    let visible = [];
+    let labelGap = 2;
+    for(let candidate of candidates){
+        if(!visible.length){
+            visible.push(candidate);
+            continue;
+        }
+        let previous = visible[visible.length-1];
+        if(candidate.left < previous.right+labelGap){
+            if(candidate.index===candidates.length-1){
+                // Preserve the right endpoint by dropping the last interior
+                // label(s) that collide with it.
+                while(visible.length && candidate.left <
+                    visible[visible.length-1].right+labelGap)
+                    visible.pop();
+                if(!visible.length || candidate.left >=
+                    visible[visible.length-1].right+labelGap)
+                    visible.push(candidate);
+            }
+            continue;
+        }
+        visible.push(candidate);
+    }
+
+    for(let candidate of visible){
+        textAlign(candidate.alignment,TOP);
+        text(candidate.tick.label,candidate.tickX,
+            labelY===undefined ? y+10 : labelY);
+    }
+}
+
+function stormImageryBdLegendLevels(){
+    return [
+        {name:'WMG',range:'>+9°C',sample:18},
+        {name:'OW',range:'+9~-30°C',sample:-10},
+        {name:'DG',range:'-30~-41°C',sample:-35},
+        {name:'MG',range:'-41~-53°C',sample:-47},
+        {name:'LG',range:'-53~-63°C',sample:-58},
+        {name:'B',range:'-63~-69°C',sample:-66},
+        {name:'W',range:'-69~-75°C',sample:-72},
+        {name:'CMG',range:'-75~-80°C',sample:-78},
+        {name:'CDG',range:'-80~-85°C',sample:-82.5},
+        {name:'VCDG',range:'-85~-89°C',sample:-87},
+        {name:'ECDG',range:'<-89°C',sample:SIMULATED_IR_BD_BT_MIN}
+    ];
+}
+
+function stormImageryDrawBdLegendKey(x,y,w){
+    let levels = stormImageryBdLegendLevels();
+    let columns = 4;
+    let cellWidth = w/columns;
+    let rowHeight = 6;
+    let keyY = y+13;
+    textSize(6);
+    textAlign(LEFT,TOP);
+    for(let i=0;i<levels.length;i++){
+        let level = levels[i];
+        let cellX = x+(i%columns)*cellWidth;
+        let rowY = keyY+Math.floor(i/columns)*rowHeight;
+        noStroke();
+        fill(simulatedIrBdColor(level.sample));
+        rect(cellX,rowY+1,5,5);
+        fill(COLORS.UI.text);
+        text(level.name+' '+level.range,cellX+7,rowY);
+    }
+}
+
+function stormImageryLegend(tab,x,y,w){
+    if(tab==='sar'){
+        let gap = 10;
+        let barWidth = Math.floor((w-gap)/2);
+        let drawBar = (barX,maxValue,toKnots,title,displayValue)=>{
+            stormImageryDrawGradient(barX,y,barWidth,0,maxValue,
+                value=>simulatedSarColor(toKnots(value)));
+            noStroke();
+            fill(COLORS.UI.text);
+            textAlign(LEFT,TOP);
+            textSize(8);
+            text(title,barX,y-12);
+            let ticks = STORM_IMAGERY_SAR_COLOR_LEVELS.map(value=>({
+                value:displayValue(value),
+                label:String(round(displayValue(value)))
+            }));
+            stormImageryDrawTickMarks(barX,y,barWidth,0,maxValue,
+                ticks.map(tick=>tick.value));
+            stormImageryDrawScaleLabels(barX,y,barWidth,0,maxValue,ticks);
+        };
+        drawBar(x,SIMULATED_SAR_WIND_MAX/SIMULATED_SAR_KNOTS_PER_MS,
+            v=>v*SIMULATED_SAR_KNOTS_PER_MS,'Wind speed (m/s)',
+            v=>v/SIMULATED_SAR_KNOTS_PER_MS);
+        drawBar(x+barWidth+gap,SIMULATED_SAR_WIND_MAX,v=>v,
+            'Wind speed (knots)',v=>v);
+        return;
+    }
+
+    let isBaseScan = tab==='baseScan';
+    let isIrBd = tab==='irBd';
+    let cloudMaximum = typeof SIMULATED_CLOUD_BT_MAX==='number' ?
+        SIMULATED_CLOUD_BT_MAX : 50;
+    let start = isBaseScan ? SIMULATED_BASE_SCAN_BT_MIN :
+        isIrBd ? SIMULATED_IR_BD_BT_MAX : cloudMaximum;
+    let end = isBaseScan ? SIMULATED_BASE_SCAN_BT_MAX :
+        isIrBd ? SIMULATED_IR_BD_BT_MIN : -85;
+    let colorFunc = isBaseScan ? simulatedBaseScanColor :
+        isIrBd ? simulatedIrBdColor : simulatedCloudColor;
+    stormImageryDrawGradient(x,y,w,start,end,colorFunc);
+
+    noStroke();
+    fill(COLORS.UI.text);
+    textAlign(LEFT,TOP);
+    textSize(8);
+    if(isBaseScan) text('Brightness temperature (K)',x,y-12);
+    else if(isIrBd) text('Dvorak BD enhancement · cloud-top °C',x,y-12);
+
+    if(isBaseScan){
+        let ticks = STORM_IMAGERY_BASE_SCAN_COLOR_LEVELS.map(value=>({
+            value,
+            label:String(value)
+        }));
+        stormImageryDrawTickMarks(x,y,w,start,end,
+            ticks.map(tick=>tick.value));
+        stormImageryDrawScaleLabels(x,y,w,start,end,ticks);
+    }else if(isIrBd){
+        let tickValues = [SIMULATED_IR_BD_BT_MAX,9,-30,-41,-53,-63,
+            -69,-75,-80,SIMULATED_IR_BD_CDG_MIN,
+            SIMULATED_IR_BD_VCDG_MIN,SIMULATED_IR_BD_BT_MIN];
+        stormImageryDrawTickMarks(x,y,w,start,end,tickValues);
+        stormImageryDrawBdLegendKey(x,y,w);
+    }else{
+        stormImageryDrawTickMarks(x,y,w,start,end,[start,end]);
+        stormImageryDrawScaleLabels(x,y,w,start,end,[
+            {value:start,label:'Clear'},
+            {value:end,label:'Deep convection'}
+        ]);
+    }
+}
+
+function stormImageryTemperatureLabel(temperature){
+    let rounded = round(temperature*10)/10;
+    return (rounded>0 ? '+' : '')+rounded+'°C';
+}
+
+function renderStormImageryPanel(panel,imageryFrame){
+    if(!stormImageryPanelEnabled()){
+        panel.hide();
+        return;
+    }
+    if(!stormImageryIsAvailable(selectedStorm)){
+        panel.hide();
+        return;
+    }
+    normalizeStormImageryTab();
+    if(!stormImageryTabEnabled(stormImageryTab)) return;
+
+    let basin = UI.viewBasin;
+    let storm = selectedStorm;
+    let data = imageryFrame && imageryFrame.data ? imageryFrame.data : storm.current;
+    if(!data || !data.pos || !Number.isFinite(data.pos.x) || !Number.isFinite(data.pos.y)) return;
+    let tick = imageryFrame && Number.isFinite(imageryFrame.tick) ?
+        imageryFrame.tick : basin.tick;
+    let isSar = stormImageryTab==='sar';
+    let isIrBd = stormImageryTab==='irBd';
+    let isBaseScan = stormImageryTab==='baseScan';
+    let isPolarHd = stormImageryHighDefinition;
+    let systems = basin.env.getBaseScanSystems(tick,storm);
+    let descriptor = systems[0];
+    let minimumExtent = stormImageryMinimumExtent(descriptor,data,isSar);
+    let baseScanExtent = descriptor ?
+        max(descriptor.rmwX,descriptor.rmwY)*3.1 : undefined;
+    let sarExtent = descriptor ?
+        max(minimumExtent,max(descriptor.rmwX,descriptor.rmwY)*4.2) : undefined;
+    let extent = descriptor && stormImageryTab==='baseScan' ?
+        max(minimumExtent,baseScanExtent) : isSar && sarExtent ? sarExtent : descriptor ?
+        max(descriptor.outerX,descriptor.outerY)*1.18 :
+        max(minimumExtent,Number.isFinite(data.radiusOfMaxWind) ? data.radiusOfMaxWind/2 : minimumExtent);
+    extent = max(minimumExtent,extent);
+
+    let imageX = 10;
+    let imageY = 68;
+    let imageSize = panel.width-20;
+    let rasterSize = isPolarHd ? STORM_POLAR_SATELLITE_RASTER_SIZE :
+        stormImageryTab==='baseScan' ? STORM_IMAGERY_BASE_SCAN_RASTER_SIZE :
+        isSar ? STORM_IMAGERY_SAR_RASTER_SIZE : STORM_IMAGERY_RASTER_SIZE;
+    let raster = isPolarHd ? ensureStormPolarSatelliteRaster(stormImageryTab) :
+        ensureStormImageryRaster(rasterSize);
+    let rasterNeedsUpdate = isPolarHd ?
+        stormPolarSatelliteRasterNeedsUpdate(stormImageryTab,basin,storm,tick,extent) :
+        stormImageryRasterBasin!==basin ||
+        stormImageryRasterStorm!==storm || stormImageryRasterTick!==tick ||
+        stormImageryRasterTab!==stormImageryTab ||
+        stormImageryRasterSize!==rasterSize ||
+        stormImageryRasterExtent!==extent;
+
+    let utility = {
+        basin,
+        storm,
+        simulatedSystems: systems,
+        simulatedSystemsTick: tick,
+        sampleX: data.pos.x,
+        sampleY: basin.hemY(data.pos.y),
+        sampleZ: tick,
+        sarVector: createVector(),
+        field(name,x,y,z){
+            if(x===undefined) x = utility.sampleX;
+            if(y===undefined) y = utility.sampleY;
+            if(z===undefined) z = utility.sampleZ;
+            return basin.env.get(name,x,y,z,true);
+        }
+    };
+    let valueFunc = isSar ? simulatedSarWindSpeed :
+        stormImageryTab==='baseScan' ? simulatedBaseScanBrightnessTemperature :
+        isIrBd ? simulatedIrBdTemperature : simulatedCloudTemperature;
+    let colorFunc = isSar ? simulatedSarColor :
+        stormImageryTab==='baseScan' ? simulatedBaseScanColor :
+        isIrBd ? simulatedIrBdColor : simulatedCloudColor;
+    let rgbaFunc = isSar ? simulatedSarRgba :
+        isBaseScan ? simulatedBaseScanRgba :
+        isIrBd ? simulatedIrBdRgba : simulatedCloudRgba;
+    let centerX = data.pos.x;
+    let centerY = basin.hemY(data.pos.y);
+    // The cloud/IR field displaces the apparent eye downshear for every
+    // raster mode, not only Polar HD. Use that same center for the readout so
+    // ordinary IR-BD does not report the colder storm-center pixel.
+    let eyeCenter = descriptor ?
+        stormPolarSatelliteEyeCenter(descriptor) : undefined;
+    let eyeSampleX = eyeCenter ? eyeCenter.x : centerX;
+    let eyeSampleY = eyeCenter ? eyeCenter.y : centerY;
+    // `field()` defaults to the utility's current sample position. Keep it in
+    // step with the eye sample so moisture/SST do not silently come from the
+    // storm center while the temperature is read from the displaced eye.
+    utility.sampleX = eyeSampleX;
+    utility.sampleY = eyeSampleY;
+    utility.sampleZ = tick;
+    let eyeTemperature = isIrBd ?
+        simulatedIrBdTemperature(utility,eyeSampleX,eyeSampleY,tick) : undefined;
+    if(isPolarHd && Number.isFinite(eyeTemperature))
+        eyeTemperature = stormPolarSatelliteEyeClearance(
+            utility,eyeSampleX,eyeSampleY,tick,eyeTemperature
+        );
+    let polarRasterReady = true;
+    let sarMaxWind;
+    if(rasterNeedsUpdate){
+        if(isPolarHd){
+            // Render only the selected page. The other high-resolution
+            // products stay cold until their tabs are opened, then retain
+            // their own cached raster and geographic extent.
+            polarRasterReady = renderStormPolarSatelliteRaster(
+                raster,stormImageryTab,utility,
+                basin,centerX,centerY,extent,tick
+            );
+            if(polarRasterReady)
+                stormPolarRasterState[stormImageryTab] = {
+                    basin,
+                    storm,
+                    tick,
+                    extent,
+                    rendered: true,
+                    maxWind: isSar ? stormPolarSatelliteRenderJob.maxWind :
+                        undefined
+                };
+        }else{
+            let cloudTemperatureCache;
+            if(stormImageryUsesCloudTemperature(stormImageryTab)){
+                cloudTemperatureCache = ensureStormCloudTemperatureCache(
+                    stormImageryCloudTemperatureCache,basin,storm,tick,
+                    centerX,centerY,extent,raster.width,raster.height
+                );
+                stormImageryCloudTemperatureCache = cloudTemperatureCache;
+            }
+            raster.loadPixels();
+            let rasterSarMaxWind;
+            let rgbaScratch = rgbaFunc ? [0,0,0,0] : undefined;
+            let queryCached = basin.env &&
+                typeof basin.env.beginQueryCache==='function';
+            if(queryCached) basin.env.beginQueryCache();
+            try{
+                for(let row=0;row<raster.height;row++){
+                    for(let col=0;col<raster.width;col++){
+                        let localX = (col+0.5)/raster.width-0.5;
+                        let localY = (row+0.5)/raster.height-0.5;
+                        let rawSampleX = centerX+localX*2*extent;
+                        let rawScreenY = centerY+localY*2*extent;
+                        let outsideBaseScan = isBaseScan &&
+                            !stormImagerySampleInBounds(rawSampleX,rawScreenY);
+                        let sampleX = outsideBaseScan ? rawSampleX :
+                            constrain(rawSampleX,0,WIDTH-1);
+                        let screenY = outsideBaseScan ? rawScreenY :
+                            constrain(rawScreenY,0,HEIGHT-1);
+                        // `centerY`, the descriptor, and every simulated imagery
+                        // function share hemisphere-normalized coordinates. Do not
+                        // apply the Southern Hemisphere transform a second time.
+                        let sampleY = screenY;
+                        utility.sampleX = sampleX;
+                        utility.sampleY = sampleY;
+                        utility.sampleZ = tick;
+                        let index = row*raster.width+col;
+                        let value;
+                        if(outsideBaseScan){
+                            // Match the panel's clear-sky background outside
+                            // the basin instead of stretching its edge data.
+                            value = SIMULATED_BASE_SCAN_BT_MAX;
+                        }else if(cloudTemperatureCache){
+                            value = cloudTemperatureCache.values[index];
+                            if(!Number.isFinite(value)){
+                                value = simulatedCloudTemperature(
+                                    utility,sampleX,sampleY,tick
+                                );
+                                cloudTemperatureCache.values[index] = value;
+                            }
+                        }else{
+                            value = valueFunc(utility,sampleX,sampleY,tick);
+                        }
+                        if(isSar && Number.isFinite(value))
+                            rasterSarMaxWind = rasterSarMaxWind===undefined ? value :
+                                Math.max(rasterSarMaxWind,value);
+                        let pixelIndex = 4*index;
+                        if(Number.isFinite(value) && rgbaFunc){
+                            let rgba = rgbaFunc(value,rgbaScratch);
+                            raster.pixels[pixelIndex] = rgba[0];
+                            raster.pixels[pixelIndex+1] = rgba[1];
+                            raster.pixels[pixelIndex+2] = rgba[2];
+                            raster.pixels[pixelIndex+3] = rgba[3];
+                        }else{
+                            let c = Number.isFinite(value) ? colorFunc(value) :
+                                (isSar ? color(0,0,0,0) : color(128,128,128,255));
+                            raster.pixels[pixelIndex] = red(c);
+                            raster.pixels[pixelIndex+1] = green(c);
+                            raster.pixels[pixelIndex+2] = blue(c);
+                            raster.pixels[pixelIndex+3] = alpha(c);
+                        }
+                    }
+                }
+            }finally{
+                if(queryCached) basin.env.endQueryCache();
+            }
+            raster.updatePixels();
+            stormImageryRasterBasin = basin;
+            stormImageryRasterStorm = storm;
+            stormImageryRasterTick = tick;
+            stormImageryRasterTab = stormImageryTab;
+            stormImageryRasterSize = rasterSize;
+            stormImageryRasterExtent = extent;
+            stormImageryRasterSarMaxWind = isSar ? rasterSarMaxWind : undefined;
+        }
+    }
+
+    if(isSar){
+        if(isPolarHd){
+            let polarState = stormPolarRasterState[stormImageryTab];
+            sarMaxWind = polarRasterReady && polarState && polarState.rendered ?
+                polarState.maxWind : undefined;
+        }else{
+            sarMaxWind = stormImageryRasterSarMaxWind;
+        }
+    }
+
+    if(!isSar){
+        noStroke();
+        fill(stormImageryTab==='baseScan' ?
+            simulatedBaseScanColor(SIMULATED_BASE_SCAN_BT_MAX) :
+            isIrBd ? simulatedIrBdColor(SIMULATED_IR_BD_BT_MAX) : color(10,24,42));
+        rect(imageX,imageY,imageSize,imageSize);
+    }
+    push();
+    let smoothing = drawingContext.imageSmoothingEnabled;
+    // Bilinear interpolation gives the ordinary cloud image its original
+    // lightly smoothed appearance. Keep SAR speckle and the stepped IR-BD
+    // categories discrete; Polar remains a native 512px product.
+    drawingContext.imageSmoothingEnabled = !isSar && !isIrBd;
+    image(raster,imageX,imageY,imageSize,imageSize);
+    drawingContext.imageSmoothingEnabled = smoothing;
+    pop();
+    if(isPolarHd && !polarRasterReady)
+        renderStormPolarSatelliteLoading(
+            imageX,imageY,imageSize,stormPolarSatelliteRenderJob
+        );
+    if(isSar) renderStormSarOverlay(imageX,imageY,imageSize,sarMaxWind);
+    // Keep the three metadata items on one line. The detailed product
+    // descriptions remain in the legend title below, while these short names
+    // leave a guaranteed gap around the centered wind label.
+    let imageryTitle = isSar ? (isPolarHd ? 'SAR wind · HD' : 'SAR wind') :
+        isBaseScan ? (isPolarHd ? 'Base scan · HD' : 'Base scan') :
+        isIrBd ? (isPolarHd ? 'IR-BD · HD' : 'IR-BD') :
+        (isPolarHd ? 'Clouds · HD' : 'Clouds');
+    let metadataY = imageY+imageSize+10;
+    let windLabel = 'Wind '+displayWindspeed(round(data.windSpeed),1);
+    let pressureLabel = round(data.pressure)+' hPa';
+    let intensityLabel = windLabel+' · '+pressureLabel;
+    fill(COLORS.UI.text);
+    textSize(9);
+    textAlign(LEFT,TOP);
+    text(imageryTitle,10,metadataY);
+    textAlign(RIGHT,TOP);
+    text(intensityLabel,panel.width-10,metadataY);
+    if(isIrBd && Number.isFinite(eyeTemperature)){
+        textSize(10);
+        textAlign(LEFT,TOP);
+        text('Eye temp: '+stormImageryTemperatureLabel(eyeTemperature),
+            10,metadataY+15);
+    }
+    stormImageryLegend(stormImageryTab,10,panel.height-32,panel.width-20);
+}
+
+function renderPolarSatelliteImageryPanel(panel){
+    if(!stormImageryIsAvailable(selectedStorm) || !polarSatelliteSnapshot){
+        panel.hide();
+        return;
+    }
+
+    // Reuse the same product renderer and legend as the original panel while
+    // keeping its selected tab and raster state completely independent.
+    let originalTab = stormImageryTab;
+    let originalHd = stormImageryHighDefinition;
+    stormImageryTab = polarSatelliteTab;
+    stormImageryHighDefinition = true;
+    renderStormImageryPanel(panel,polarSatelliteSnapshot);
+    polarSatelliteTab = stormImageryTab;
+    stormImageryTab = originalTab;
+    stormImageryHighDefinition = originalHd;
+}
 
 // Buoys are viewer-only state. B removes the old buoy and arms the next map click.
 let observationBuoy;
@@ -521,6 +2108,7 @@ UI.init = function(){
             drawBuffer(tracks);
             drawBuffer(forecastTracks);
             if(simSettings.showStormIcons) drawBuffer(stormIcons);
+            renderEnvLayerLegend();
         }
     },function(){
         helpBox.hide();
@@ -995,7 +2583,7 @@ UI.init = function(){
 
     // Settings Menu
 
-    settingsMenu.append(false,WIDTH/2,HEIGHT/8,0,0,function(s){ // menu title text
+    settingsMenu.append(false,WIDTH/2,HEIGHT/16,0,0,function(s){ // menu title text
         fill(COLORS.UI.text);
         noStroke();
         textAlign(CENTER,CENTER);
@@ -1003,50 +2591,67 @@ UI.init = function(){
         text("Settings",0,0);
     });
 
-    settingsMenu.append(false, WIDTH / 2 - 150, 3 * HEIGHT / 16, 300, 30, function(s){   // storm intensity indicator
+    settingsMenu.append(false, WIDTH / 2 - 150, HEIGHT / 8 + 2, 300, 30, function(s){   // storm intensity indicator
         let b = simSettings.showStrength ? "Enabled" : "Disabled";
         s.button("Intensity Indicator: "+b,true);
     },function(){
         simSettings.setShowStrength("toggle");
-    }).append(false,0,34,300,30,function(s){     // autosaving
+    }).append(false,0,30,300,30,function(s){     // autosaving
         let b = simSettings.doAutosave ? "Enabled" : "Disabled";
         s.button("Autosaving: "+b,true);
     },function(){
         simSettings.setDoAutosave("toggle");
-    }).append(false,0,34,300,30,function(s){     // track mode
+    }).append(false,0,30,300,30,function(s){     // track mode
         let m = ["Active TC Tracks","Full Active Tracks","Season Summary","No Tracks"][simSettings.trackMode];
         s.button("Track Mode: "+m,true);
     },function(){
         simSettings.setTrackMode("incmod",4);
         refreshTracks(true);
-    }).append(false,0,34,300,30,function(s){     // wind fields
+    }).append(false,0,30,300,30,function(s){     // wind fields
         let b = simSettings.showWindFields ? "Enabled" : "Disabled";
         s.button("Wind Fields: "+b,true);
     },function(){
         simSettings.setShowWindFields("toggle");
-    }).append(false,0,34,300,30,function(s){     // wind field style
+    }).append(false,0,30,300,30,function(s){     // simulated cloud and IR-BD imagery tabs
+        let b = stormImageryTabEnabled('clouds') ? "Enabled" : "Disabled";
+        s.button("Clouds / IR-BD Tabs: "+b,true);
+    },function(){
+        simSettings.setShowCloudsTab("toggle");
+        updateStormImageryTabs();
+    }).append(false,0,30,300,30,function(s){     // simulated storm imagery panel
+        let b = stormImageryPanelEnabled() ? "Enabled" : "Disabled";
+        s.button("Scan Tab: "+b,true);
+    },function(){
+        simSettings.setShowScanTab("toggle");
+        updateStormImageryPanel();
+    }).append(false,0,30,300,30,function(s){     // map layer legends
+        let b = simSettings.showLayerLegends ? "Enabled" : "Disabled";
+        s.button("Map Layer Legends: "+b,true);
+    },function(){
+        simSettings.setShowLayerLegends("toggle");
+    }).append(false,0,30,300,30,function(s){     // wind field style
         let style = WIND_FIELD_STYLE_NAMES[simSettings.windFieldStyle] || WIND_FIELD_STYLE_NAMES[WIND_FIELD_STYLE_NHC];
         s.button("Wind Field Style: "+style,true);
     },function(){
         simSettings.setWindFieldStyle("incmod",WIND_FIELD_STYLE_COUNT);
-    }).append(false,0,34,300,30,function(s){     // snow
+    }).append(false,0,30,300,30,function(s){     // snow
         let b = simSettings.snowLayers ? (simSettings.snowLayers*10) + " layers" : "Disabled";
         s.button("Snow: "+b,true);
     },function(){
         simSettings.setSnowLayers("incmod",floor(MAX_SNOW_LAYERS/10)+1);
         if(land) land.clearSnow();
-    }).append(false,0,34,300,30,function(s){     // shadows (NOT a shader O~O)
+    }).append(false,0,30,300,30,function(s){     // shadows (NOT a shader O~O)
         let b = simSettings.useShadows ? "Enabled" : "Disabled";
         s.button("Land Shadows: "+b,true);
     },function(){
         simSettings.setUseShadows("toggle");
-    }).append(false,0,34,300,30,function(s){     // magnifying glass
+    }).append(false,0,30,300,30,function(s){     // magnifying glass
         let b = simSettings.showMagGlass ? "Enabled" : "Disabled";
         s.button("Magnifying Glass: "+b,true);
     },function(){
         simSettings.setShowMagGlass("toggle");
         if(UI.viewBasin) UI.viewBasin.env.updateMagGlass();
-    }).append(false,0,34,300,30,function(s){     // smooth land color
+    }).append(false,0,30,300,30,function(s){     // smooth land color
         let b = simSettings.smoothLandColor ? "Enabled" : "Disabled";
         s.button("Smooth Land Color: "+b,true);
     },function(){
@@ -1055,12 +2660,12 @@ UI.init = function(){
             // landBuffer.clear();
             land.drawn = false;
         }
-    }).append(false,0,34,300,30,function(s){     // speed unit
+    }).append(false,0,30,300,30,function(s){     // speed unit
         let u = ['kts', 'mph', 'km/h'][simSettings.speedUnit];
         s.button("Windspeed Unit: " + u, true);
     },function(){
         simSettings.setSpeedUnit("incmod", 3);
-    }).append(false,0,34,300,30,function(s){     // color scheme
+    }).append(false,0,30,300,30,function(s){     // color scheme
         let n = COLOR_SCHEMES[simSettings.colorScheme].name;
         s.button("Color Scheme: " + n, true);
     },function(){
@@ -1068,7 +2673,7 @@ UI.init = function(){
         refreshTracks(true);
     });
 
-    settingsMenu.append(false,WIDTH/2-150,7*HEIGHT/8+20,300,30,function(s){ // "Back" button
+    settingsMenu.append(false,WIDTH/2-150,HEIGHT-35,300,30,function(s){ // "Back" button
         s.button("Back",true,20);
     },function(){
         settingsMenu.hide();
@@ -1510,7 +3115,7 @@ UI.init = function(){
         textSize(18);
     },false);
 
-    topBar.append(false,5,3,100,24,function(s){  // Date indicator
+    let dateIndicator = topBar.append(false,5,3,100,24,function(s){  // Date indicator
         if(!(UI.viewBasin instanceof Basin)) return;
         let basin = UI.viewBasin;
         let txtStr = formatDate(basin.tickMoment(viewTick)) + (basin.viewingPresent() ? '' : ' [Analysis]');
@@ -1526,7 +3131,16 @@ UI.init = function(){
         dateNavigator.toggleShow();
     });
 
-    let panel_timeline_container = primaryWrapper.append(false,0,topBar.height,0,0,undefined,undefined,false);
+    topBar.append(false,150,3,132,24,function(s){  // High quality imagery button
+        let unavailable = !stormImageryPanelEnabled() ||
+            !stormImageryIsAvailable(selectedStorm);
+        this.setBox(Math.max(145,dateIndicator.width+10),3,132,24);
+        s.button('High Quality',true,13,unavailable);
+    },function(){
+        openPolarSatelliteImagery();
+    });
+
+    panel_timeline_container = primaryWrapper.append(false,0,topBar.height,0,0,undefined,undefined,false);
 
     dateNavigator = primaryWrapper.append(false,0,30,140,80,function(s){     // Analysis navigator panel
         fill(COLORS.UI.box);
@@ -1623,8 +3237,16 @@ UI.init = function(){
         if(panel_timeline_container.showing) triangle(6,15,18,15,12,9);
         else triangle(6,9,18,9,12,15);
     },function(){
-        if(!panel_timeline_container.showing) stormInfoPanel.target = selectedStorm || UI.viewBasin.getSeason(viewTick);
+        if(!panel_timeline_container.showing){
+            stormInfoPanel.target = selectedStorm || UI.viewBasin.getSeason(viewTick);
+            if(stormImageryPanel) stormImageryPanel.hide();
+            if(polarSatellitePanel) polarSatellitePanel.hide();
+        }
         panel_timeline_container.toggleShow();
+        if(!panel_timeline_container.showing){
+            updateStormImageryPanel();
+            updatePolarSatellitePanel();
+        }
     }).append(false,-29,0,24,10,function(s){     // Speed increase
         let grey = simSpeed == MAX_SPEED;
         s.button('', false, undefined, grey);
@@ -1695,6 +3317,8 @@ UI.init = function(){
         }else{
             stormInfoPanel.target = selectedStorm;
             panel_timeline_container.show();
+            if(stormImageryPanel) stormImageryPanel.hide();
+            if(polarSatellitePanel) polarSatellitePanel.hide();
         }
     });
 
@@ -1864,11 +3488,19 @@ UI.init = function(){
                 info_row('Peak wind speed', 'N/A');
             let circulationData = S.getStormDataByTick(viewTick,true);
             if(circulationData instanceof StormData){
-                let circulationLevel = StormData.constrainCirculationSize(circulationData.circulationSize);
                 info_row(
                     'Circulation size',
-                    'Level ' + circulationLevel + ' / 5\n' + round(circulationData.radiusOfMaxWind) + ' nmi RMW'
+                    StormData.circulationSizeLabel(circulationData.circulationSize) + '\n' + round(circulationData.radiusOfMaxWind) + ' nmi RMW'
                 );
+                if(circulationData.type===TROP || circulationData.type===SUBTROP){
+                    let eyeDiameter = Number.isFinite(circulationData.eyeDiameter) ?
+                        round(circulationData.eyeDiameter*10)/10 + ' nmi diameter' :
+                        StormData.eyeTypeDiameterLabel(circulationData.eyeType);
+                    info_row(
+                        'Eye type',
+                        StormData.eyeTypeLabel(circulationData.eyeType) + '\n' + eyeDiameter
+                    );
+                }
             }
             info_row('ACE', S.ACE);
             info_row('Damage', damageDisplayNumber(S.damage));
@@ -2528,6 +4160,7 @@ UI.init = function(){
         }
         let wait = ()=>{
             UI.viewBasin = undefined;
+            if(typeof clearAircraftRecon==='function') clearAircraftRecon();
             mainMenu.show();
         };
         if(p instanceof Promise) p.then(wait);
@@ -2641,6 +4274,134 @@ UI.init = function(){
         UI.inputData.selectionEnd = UI.inputData.value.length;
     },false);
 
+    stormImageryPanel = primaryWrapper.append(false,
+        WIDTH-STORM_IMAGERY_PANEL_WIDTH-6,36,
+        STORM_IMAGERY_PANEL_WIDTH,STORM_IMAGERY_PANEL_HEIGHT,
+        function(s){
+            fill(COLORS.UI.box);
+            noStroke();
+            s.fullRect();
+            if(!stormImageryIsAvailable(selectedStorm)) return;
+            let title = selectedStorm.getFullNameByTick(UI.viewBasin.tick);
+            if(!title) title = 'Selected cyclone';
+            if(title.length>35) title = title.slice(0,34)+'…';
+            fill(COLORS.UI.text);
+            textAlign(LEFT,TOP);
+            textSize(15);
+            text(title,10,5);
+            renderStormImageryPanel(this);
+        },function(){},false);
+
+    let imageryTabWidth = (STORM_IMAGERY_PANEL_WIDTH-28)/4;
+    let renderImageryTab = function(s,label,tab){
+        noStroke();
+        fill(stormImageryTab===tab ? COLORS.UI.buttonHover : COLORS.UI.buttonBox);
+        s.fullRect();
+        fill(COLORS.UI.text);
+        textAlign(CENTER,CENTER);
+        textSize(13);
+        text(label,this.width/2,this.height/2);
+    };
+    stormImageryCloudsTab = stormImageryPanel.append(false,8,32,imageryTabWidth,27,function(s){
+        renderImageryTab.call(this,s,'Clouds','clouds');
+    },function(){
+        stormImageryTab = 'clouds';
+    });
+    stormImageryIrBdTab = stormImageryPanel.append(false,12+imageryTabWidth,32,imageryTabWidth,27,function(s){
+        renderImageryTab.call(this,s,'IR-BD','irBd');
+    },function(){
+        stormImageryTab = 'irBd';
+    });
+    stormImageryBaseScanTab = stormImageryPanel.append(false,16+imageryTabWidth*2,32,imageryTabWidth,27,function(s){
+        renderImageryTab.call(this,s,'Base scan','baseScan');
+    },function(){
+        stormImageryTab = 'baseScan';
+    });
+    stormImagerySarTab = stormImageryPanel.append(false,20+imageryTabWidth*3,32,imageryTabWidth,27,function(s){
+        renderImageryTab.call(this,s,'SAR wind','sar');
+    },function(){
+        stormImageryTab = 'sar';
+    });
+    stormImageryPanel.append(false,STORM_IMAGERY_PANEL_WIDTH-29,3,24,24,function(s){
+        s.button('X',false,22);
+    },function(){
+        selectStorm();
+        refreshTracks(true);
+    });
+
+    // The polar-satellite product is an additional viewer. The original
+    // imagery panel remains in place and keeps all of its existing tabs.
+    polarSatellitePanel = primaryWrapper.append(false,
+        WIDTH-STORM_IMAGERY_PANEL_WIDTH*2-12,36,
+        STORM_IMAGERY_PANEL_WIDTH,STORM_IMAGERY_PANEL_HEIGHT,
+        function(s){
+            fill(COLORS.UI.box);
+            noStroke();
+            s.fullRect();
+            if(!stormImageryIsAvailable(selectedStorm)) return;
+            let title = selectedStorm.getFullNameByTick(polarSatelliteSnapshot.tick);
+            if(!title) title = 'Selected cyclone';
+            title = 'Polar satellite · HD · '+title;
+            if(title.length>35) title = title.slice(0,34)+'…';
+            fill(COLORS.UI.text);
+            textAlign(LEFT,TOP);
+            textSize(13);
+            text(title,10,5);
+            textSize(10);
+            text('6-hour snapshot: '+formatDate(UI.viewBasin.tickMoment(
+                polarSatelliteSnapshot.tick)),10,20);
+            renderPolarSatelliteImageryPanel(this);
+        },function(){},false);
+
+    let polarImageryTabGap = 4;
+    let polarImageryTabWidth = (STORM_IMAGERY_PANEL_WIDTH-16-
+        polarImageryTabGap*3)/4;
+    let renderPolarImageryTab = function(s,label,tab){
+        noStroke();
+        fill(polarSatelliteTab===tab ? COLORS.UI.buttonHover : COLORS.UI.buttonBox);
+        s.fullRect();
+        fill(COLORS.UI.text);
+        textAlign(CENTER,CENTER);
+        textSize(label.length>8 ? 10 : 12);
+        text(label,this.width/2,this.height/2);
+    };
+    polarSatelliteCloudsTab = polarSatellitePanel.append(false,8,32,
+        polarImageryTabWidth,27,function(s){
+            renderPolarImageryTab.call(this,s,'Clouds','clouds');
+        },function(){
+            polarSatelliteTab = 'clouds';
+        });
+    polarSatelliteIrBdTab = polarSatellitePanel.append(false,
+        8+polarImageryTabWidth+polarImageryTabGap,32,polarImageryTabWidth,27,function(s){
+            renderPolarImageryTab.call(this,s,'IR-BD','irBd');
+        },function(){
+            polarSatelliteTab = 'irBd';
+        });
+    polarSatelliteBaseScanTab = polarSatellitePanel.append(false,
+        8+2*(polarImageryTabWidth+polarImageryTabGap),32,
+        polarImageryTabWidth,27,function(s){
+            renderPolarImageryTab.call(this,s,'Base scan','baseScan');
+        },function(){
+            polarSatelliteTab = 'baseScan';
+        });
+    polarSatelliteSarTab = polarSatellitePanel.append(false,
+        8+3*(polarImageryTabWidth+polarImageryTabGap),32,
+        polarImageryTabWidth,27,function(s){
+            renderPolarImageryTab.call(this,s,'SAR wind','sar');
+        },function(){
+            polarSatelliteTab = 'sar';
+        });
+    polarSatellitePanel.append(false,STORM_IMAGERY_PANEL_WIDTH-29,3,24,24,
+        function(s){
+            s.button('X',false,22);
+        },function(){
+            polarSatelliteOpen = false;
+            resetStormPolarSatelliteRasters();
+            updatePolarSatellitePanel();
+        });
+    updateStormImageryTabs();
+    updatePolarSatellitePanel();
+
     helpBox = primaryWrapper.append(false,WIDTH/8,HEIGHT/8,3*WIDTH/4,3*HEIGHT/4,function(s){
         fill(COLORS.UI.box);
         noStroke();
@@ -2667,6 +4428,9 @@ UI.init = function(){
     },function(){
         clearObservationBuoy(false);
     },false);
+
+    if(typeof initAircraftReconUI==='function')
+        initAircraftReconUI(topBar,primaryWrapper,dateIndicator);
 };
 
 function mouseInCanvas(){
@@ -2681,10 +4445,22 @@ function mouseClicked(){
 }
 
 function selectStorm(s){
+    // The polar product is a manual snapshot tied to the selected cyclone.
+    // Changing the selection closes only that extra viewer; the original
+    // imagery panel continues to follow the normal selection behavior.
+    polarSatelliteOpen = false;
+    polarSatelliteSnapshot = undefined;
+    stormImageryHighDefinition = false;
+    resetStormPolarSatelliteRasters();
+    if(typeof clearAircraftRecon==='function') clearAircraftRecon();
     if(s instanceof Storm){
         selectedStorm = s;
         stormInfoPanel.target = s;
+        if(panel_timeline_container && panel_timeline_container.showing)
+            panel_timeline_container.hide();
     }else selectedStorm = undefined;
+    updateStormImageryPanel();
+    updatePolarSatellitePanel();
 }
 
 function keyPressed(){
@@ -2895,6 +4671,7 @@ function changeViewTick(t){
     let finish = ()=>{
         refreshTracks(oldS!==newS);
         UI.viewBasin.env.displayLayer();
+        updateStormImageryPanel();
     };
     let requisites = s=>{
         let arr = [];
@@ -2919,6 +4696,7 @@ function changeViewTick(t){
     }else UI.viewBasin.fetchSeason(viewTick,true,false,s=>{
         requisites(s);
     });
+    updateStormImageryPanel();
 }
 
 // function deviceTurned(){
